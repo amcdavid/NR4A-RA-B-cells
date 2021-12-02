@@ -1,0 +1,956 @@
+---
+title: "RA Synovial/Blood 5' expression"
+author: "Andrew McDavid"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+  slidy_presentation:
+    font_adjustment: +1
+extensions: inline_footnotes
+---
+
+# Todo
+
+Try scds for doublet detection
+Class switch distributions by cluster
+BCR (molecules) recovery by cluster
+
+# Libraries
+
+```{r library, message = FALSE, warning = FALSE, results = 'hide'}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE, autodep=TRUE, message=FALSE, warning=FALSE)
+knitr::opts_chunk$set(dev = c('png', 'pdf'))
+library(broom)
+library(ggbeeswarm)
+library(AMmisc) # devtools::install_github('amcdavid/AMmisc')
+
+library(SingleCellExperiment)
+library(scater)
+library(tidyverse)
+library(dplyr)
+library(ggrepel)
+library(eulerr)
+VDJ = TRUE
+
+## Other packages from bioconductor:
+# DropletUtils, scran.  Install with BiocInstaller::biocLite(c('DropletUtils', 'scran'))
+## Other packages from cran:
+# install.packages(c('Seurat', 'readxl'))
+
+```
+
+# Load data
+
+```{r fileset_metadata}
+pipestance_all = list.files('deliv_Anolik_042318_cellRanger_only_filtered/', full.names = TRUE, recursive = TRUE, pattern = 'genes.tsv') %>% str_split('/+', simplify = TRUE)
+
+bases = pipestance_all[,2]
+pipestance = apply(pipestance_all[,-6], 1, function(x) do.call(file.path, as.list(x)))
+
+samp_map = data_frame(anno_file = pipestance, sample = str_match(bases, 'Sample_(RA[0-9]+)')[,2], pop = str_match(bases, '(Syn|SYN|BLD)')[,1] %>% toupper(), fileset = seq_along(pipestance), dataset = paste(sample, pop, sep = "_"))
+names(pipestance) = samp_map$dataset
+```
+
+```{r filterset}
+#these are also in alphabetical order, per Nida
+
+barcodes = read_csv('refined/nida_livecells_barcodes.csv', skip = 5) %>% mutate(barcode = str_replace_all(CellId, '[0-9]_', ''), fileset = as.integer(str_extract(CellId, '^[0-9]'))) %>% left_join(samp_map)
+```
+
+## Mapping statistics
+
+```{r mappingstat}
+stats = list.files('deliv_Anolik_042318_cellRanger_only_filtered/', pattern = 'metrics_summary.csv', full.names = TRUE, recursive = TRUE) 
+stats = data_frame(file = stats) %>% rowwise() %>% mutate(stats = list(read_csv(file)))%>% unnest(stats) %>% select(run = file, 'Percent Mapping to Genome' = `Reads Mapped Confidently to Genome`, 'Percent Mapping to Transcriptome' = `Reads Mapped Confidently to Transcriptome`)
+
+write_csv(stats, path = 'refined/10x_statistics.csv')
+```
+
+```{r vdj, eval = VDJ}
+paired_table = read_csv('refined/expanded_clones.csv')
+
+```
+
+
+```{r read10X}
+MIN_EXP_FREQ = .003
+
+all_res = DropletUtils::read10xCounts(samples = unname(pipestance))
+colData(all_res)$idx = seq_len(ncol(all_res))
+cd = merge(colData(all_res), samp_map %>% rename(Sample = anno_file), all.x = TRUE)
+cd$barcode = cd$Barcode
+#cd$sample = cd$dataset
+
+if(VDJ){
+    cd = merge(cd, paired_table %>% select(-sample, -pop), all.x = TRUE, by = c('dataset', 'barcode')) %>% as.data.frame
+    cd = cd %>% mutate(large_cluster_id = ifelse(max_pairs > 3, cluster_idx.1, NA))
+}
+colData(all_res) = cd[order(cd$idx),] %>% as.data.frame() %>% DataFrame()
+```
+
+```{r results = 'asis', eval = VDJ}
+
+paired_table2 = paired_table %>% full_join(cd) %>% mutate(chain_expr_type = case_when(is.na(Barcode) ~ chain_type, is.na(chain_type) ~ "5'", TRUE ~ str_c(chain_type, "_5'")))
+
+paired_table_wide = paired_table2 %>% group_by(dataset, chain_expr_type) %>% summarize(ncells = n()) %>% spread(key = chain_expr_type, value = ncells, fill = 0)
+
+knitr::kable(paired_table_wide)
+
+write_csv(paired_table_wide, 'refined/paired_table_wide.csv')
+
+for(i in seq_len(nrow(paired_table_wide))){
+      m = paired_table_wide[i,] %>% ungroup() %>% select(-dataset) %>% as.matrix()
+      colnames(m) = str_replace_all(colnames(m), '_', '&')
+      print(plot(euler(m[1,,drop = TRUE]), main = paired_table_wide[[i, 'dataset']]))
+}
+
+
+
+```
+
+```{r}
+all_res$seqgek_bc = paste(colData(all_res)$dataset, colData(all_res)$barcode, sep = '_')
+barcodes = barcodes %>% mutate(seqgek_bc = str_c(sample, pop, barcode, sep = '_'))
+all_res$seqgek_qc_ok = all_res$seqgek_bc %in% barcodes$seqgek_bc
+```
+
+
+## Backcalculate Seqgek QC
+
+```{r seqgek_qc}
+mito_allres = rowData(all_res)$Symbol %>% str_detect('MT-')
+all_res = calculateQCMetrics(all_res, feature_controls = list(mito = mito_allres))
+
+plotColData(all_res, x = "seqgek_qc_ok", y = "log10_total_counts_endogenous")
+
+all_res$bad_counts = all_res$log10_total_counts_endogenous<2.828
+
+
+plotColData(all_res, x = "pct_counts_mito", y = "total_features", colour_by = 'seqgek_qc_ok', shape_by = "bad_counts") + facet_wrap(~shape_by)
+
+plotColData(all_res, x = "pct_counts_mito", y = "total_features", colour_by ="seqgek_qc_ok")
+
+
+plotColData(all_res, x = "seqgek_qc_ok", y = "total_features", shape_by = 'bad_counts') + facet_wrap(~shape_by)
+
+plotColData(all_res, x = "seqgek_qc_ok", y = "total_counts_mito", shape_by = 'bad_counts') + facet_wrap(~shape_by)
+
+plotColData(all_res, x = "seqgek_qc_ok", y = "pct_counts_mito",  shape_by = 'bad_counts') + facet_wrap(~shape_by)
+
+
+plotColData(all_res, x = "log10_total_counts_mito", y = "log10_total_features", colour_by = 'log10_total_counts_endogenous', shape_by = "seqgek_qc_ok") + facet_wrap(~shape_by)
+
+plotColData(all_res, x = "log10_total_counts_mito", y = "log10_total_features", colour_by = 'seqgek_qc_ok', alpha = .5)
+
+```
+
+```{r}
+gg = glm(seqgek_qc_ok ~ log10_total_counts_mito + log10_total_features, data = colData(all_res), family = 'binomial')
+all_res$logistic_qc_ok = predict(gg)>0
+
+plotColData(all_res, x = "log10_total_counts_mito", y = "log10_total_features", colour_by = 'logistic_qc_ok', alpha = .5)
+```
+
+```{r}
+
+sce = all_res[,all_res$seqgek_qc_ok]
+sce = sce[Matrix::rowMeans(assay(sce) > 0) > MIN_EXP_FREQ,]
+rowData(sce)$symbol = rowData(sce)$Symbol
+rownames(sce) = make.unique(rowData(sce)$symbol)
+
+```
+
+```{r gene_whitelist}
+gene_whitelist = tribble(~symbol, ~group,
+        "ITGAX", "ABC",
+        "TBX21", "ABC",
+        "CD27", "Plasma",
+        "IGHG3", "Plasma",
+        "MS4A1", "Naive",
+        "FCRL4", "ABC",
+        'IGHD', 'Naive',
+        'XBP1', 'Plasma',
+        'CR2', 'Naive',
+        'ZEB2', 'ABC',
+        'AICDA', 'ABC' #not present at 1%
+        )
+rowData(sce)$idx = seq_len(nrow(sce))
+rd = merge(rowData(sce), gene_whitelist, all.x = TRUE)
+rowData(sce) = rd[order(rd$idx),]
+```
+
+
+
+# QC
+
+```{r calcqc}
+mito = rowData(sce)$symbol %>% str_detect('MT-')
+sce = calculateQCMetrics(sce, feature_controls = list(mito = mito))
+```
+
+```{r normalize}
+sce = normalise(sce)
+```
+
+
+
+
+# Highly variable genes
+
+```{r}
+blacklist = rep(FALSE, nrow(sce))
+```
+
+```{r trendvar}
+fit.g = scran::trendVar(sce, subset.row = !blacklist, use.spikes = FALSE, parametric = TRUE)
+dec = scran::decomposeVar(sce, fit.g) %>% as.data.frame() %>% mutate(rank = rank(-bio/total))
+ggplot(dec, aes(x = rank, y = p.value)) + geom_point()
+rowData(sce) = cbind(dec, rowData(sce))
+
+trendvar_tidy = rowData(sce) %>% as.data.frame %>% mutate(use = !blacklist, trend = fit.g$trend(mean), cut_mean = cut(sqrt(mean), 5)) %>% group_by(cut_mean, use) %>% mutate(rank_by_mean = rank(-bio/total))
+
+ggplot(dplyr::filter(trendvar_tidy, use), aes(x = sqrt(mean), y = total))+geom_point() + geom_line(aes(y = trend), color = 'red') + geom_text_repel(aes(label = ifelse(rank_by_mean<20 & FDR < .1, symbol, '')), size = 2) + theme_minimal()
+```
+
+
+```{r trendvar_notig}
+blacklist = str_detect(rowData(sce)$symbol, 'IG[HKL]V[0-9]+')
+<<trendvar>>
+```
+
+```{r hvg}
+rowData(sce)$hvg = dec$rank<3000 | !is.na(rowData(sce)$group)
+```
+
+There are `r nrow(sce)` genes after filtering and `r ncol(sce)` cells.  
+
+```{r}
+knitr::kable(table(sce$dataset))
+```
+
+# Seurat
+
+```{r seurat}
+
+foo = assays(sce) %>% lapply(as.matrix)
+colnames(foo$counts) = paste(colData(sce)$dataset, colData(sce)$barcode, sep = '_')
+#ssce = sce
+#assays(ssce) = foo
+#ssce = Seurat::Convert(ssce, to = 'seurat')
+meta = colData(sce) %>% as.data.frame
+rownames(meta) = colnames(foo$counts)
+ssce = Seurat::CreateSeuratObject(raw.data = foo$counts, meta.data = meta)
+ssce = Seurat::NormalizeData(ssce)
+ssce@var.genes = dplyr::filter(trendvar_tidy, use, rank < 1000) %>% pull(symbol)
+```
+
+```{r seurat_hvg, eval = FALSE}
+ssce = Seurat::FindVariableGenes(ssce, do.plot = TRUE, y.cutoff = 0.5)
+```
+
+There are `r length(ssce@var.genes)`
+
+```{r seurat_pca}
+PCA_COMPONENTS = 6
+MAX_PCA = ceiling(2*PCA_COMPONENTS)
+
+ssce = Seurat::ScaleData(ssce, display.progress = FALSE)
+ssce = Seurat::RunPCA(ssce, pcs.print = 0, pcs.compute = MAX_PCA)
+Seurat::PCElbowPlot(ssce, num.pc = MAX_PCA)
+
+#ssce =  Seurat::JackStraw(object = ssce, display.progress = TRUE, num.replicate = 100, do.par = TRUE, num.cores = 3, maxit = 500, num.pc = MAX_PCA)
+#Seurat::JackStrawPlot(ssce, PCs = 1:PCA_COMPONENTS)
+Seurat::DimPlot(ssce, group.by = 'sample')
+Seurat::DimPlot(ssce, group.by = 'pop')
+
+
+Seurat::PCHeatmap(ssce, pc.use = c(1:5, MAX_PCA), cells.use = 500)
+Seurat::VizPCA(object = ssce, pcs.use = c(1:5, MAX_PCA), nCol = 3)
+```
+
+## Clustering
+
+```{r seurat_cluster}
+ssce = Seurat::FindClusters(ssce, dims.use = 1:PCA_COMPONENTS, print.output = FALSE, plot.SNN = TRUE, resolution = .5)
+ssce = Seurat::RunTSNE(ssce, dims.use = 1:PCA_COMPONENTS)
+
+```
+
+
+### Reorder/label
+
+```{r}
+levs =  c('Naive(i)'='0', 'Naive(ii)'='6', 'Naive(iii)'='7',  'NR4A+'='1','LMNA+'='2','Memory'='4', 'Plasma(i)'='3', 'Plasma(ii)'='5') 
+ident_level = factor(Seurat::GetIdent(ssce, uniq = FALSE),
+                     levels = levs, labels = names(levs))
+# Must manually set slot bc Seurat drops levels and reorders with SetIdent :(
+ssce@ident = ident_level
+```
+
+```{r tsneplot}
+Seurat::TSNEPlot(ssce, do.label = TRUE, pt.size = 0.5)
+Seurat::TSNEPlot(ssce, do.label = FALSE, pt.size = 0.5)
+Seurat::TSNEPlot(ssce, pt.size = 0.5, group.by = 'dataset', do.label = FALSE)
+```
+
+```{r}
+Seurat::TSNEPlot(ssce, do.label = TRUE, pt.size = 0.5, group.by = 'class_heavy')
+Seurat::TSNEPlot(ssce, do.label = TRUE, pt.size = 0.5, group.by = 'large_cluster_id')
+```
+
+
+```{r}
+ssce@meta.data$ident = Seurat::GetIdent(ssce, uniq = FALSE)
+ssce_whole = ssce
+ssce = Seurat::SubsetData(ssce, ident.use = names(levs))
+```
+
+## Cluster heatmaps
+
+```{r seurat_label}
+get_markers_and_heatmap = function(ssce_){
+  s_mark = Seurat::FindAllMarkers(ssce_, logfc.threshold = .25, 
+                                min.pct = 0.1, only.pos = FALSE, do.print = F,
+                                return.thresh = 1, test.use = 't')
+top10 = s_mark %>% group_by(cluster) %>% top_n(10, avg_logFC)
+#top10 = s_mark %>% group_by(cluster) %>% top_n(10, p_val_adj)
+
+# setting slim.col.label to TRUE will print just the cluster IDS instead of
+# every cell name
+print(Seurat::DoHeatmap(object = ssce_, genes.use = unique(top10$gene), slim.col.label = TRUE, remove.key = TRUE, group.label.rot = TRUE) + theme(axis.text.y = element_text(size = 5)))
+ list(s_mark = s_mark, top10 = top10)
+}
+
+
+all_markers = get_markers_and_heatmap(ssce)
+s_mark = all_markers$s_mark
+top10 = all_markers$top10
+
+```
+
+```{r, fig.width=10, fig.height=7}
+Seurat::DoHeatmap(object = ssce, genes.use = unique(top10$gene), slim.col.label = TRUE, remove.key = FALSE, group.label.rot = TRUE) + theme(axis.text.y = element_text(size = 5))
+```
+
+Including key
+
+```{r}
+write_csv(dplyr::filter(s_mark, cluster == 1, avg_logFC>0), path = '04expression_cluster_de_files/10x-cluster1.csv')
+```
+
+## Feature plots
+
+```{r, fig.width = 8, fig.height=6}
+feature_genes = c('MS4A1', 'IGHD', 'XBP1', 'NR4A1', 'NR4A2', 'CD27')
+
+feature2 = c('CD27', 'MS4A1', 'IGHD', 'IGHG3', 'XBP1', 'NR4A1', 'NR4A2', 'NR4A3', 'TBX21', 'HLA-DRA', 'ITGAX', 'OAS3')
+
+nr4_genes = c('NR4A1', 'NR4A2', 'NR4A3', 'LMNA', 'GPR183', 'CD83', 'CD69')
+
+abc_genes = c('ZEB2', 'ITGAX', 'TBX21', 'CCL3', 'TNF', 'log10_total_counts', 'PC1', 'PC2')
+
+gc_genes = c('CXCR5', 'CXCR4', 'CCR7', 'GPR183', 'LTA')
+
+Seurat::FeaturePlot(ssce, features.plot = feature_genes, cols.use = c('grey30', 'green'), no.axes = TRUE, dark.theme = FALSE, pt.size = .25, nCol = 3)
+
+Seurat::FeaturePlot(ssce, features.plot = nr4_genes, cols.use = c('grey30', 'green'), no.axes = TRUE, dark.theme = FALSE, pt.size = .25, nCol = 3)
+
+
+
+vplt = Seurat::VlnPlot(ssce, features.plot = nr4_genes, point.size.use = .5, do.return = TRUE, return.plotlist = TRUE)
+
+redo_vplot = function(vplt){
+map(vplt, ~ {
+    .x$layers[[2]] = NULL
+   .x + geom_quasirandom(alpha = .5, size = .5) + theme(axis.text.x = element_text(angle = 45, size = 7))
+}) %>% cowplot::plot_grid(plotlist = .)
+}
+
+redo_vplot(vplt)
+
+```
+
+```{r}
+Seurat::FeaturePlot(ssce, features.plot = feature2, cols.use = c('grey30', 'green'), no.axes = TRUE, dark.theme = FALSE, pt.size = .25)
+
+
+Seurat::FeaturePlot(ssce, features.plot = c(feature_genes, 'CD27', 'TBX21'), cols.use = c('grey30', 'green'), no.axes = TRUE, dark.theme = FALSE, pt.size = .25)
+
+Seurat::FeaturePlot(ssce, features.plot = abc_genes, cols.use = c('grey30', 'green'), no.axes = TRUE, dark.theme = FALSE, pt.size = .25)
+
+vplt = Seurat::VlnPlot(ssce, features.plot = abc_genes, point.size.use = .5, do.return = TRUE, return.plotlist = TRUE)
+
+redo_vplot(vplt)
+
+vplt = Seurat::VlnPlot(ssce, features.plot = feature2, point.size.use = .5, do.return = TRUE, return.plotlist = TRUE)
+
+redo_vplot(vplt)
+
+```
+
+```{r gc_genes}
+Seurat::FeaturePlot(ssce, features.plot = gc_genes, cols.use = c('grey30', 'green'), no.axes = TRUE, dark.theme = FALSE, pt.size = .25)
+
+vplt = Seurat::VlnPlot(ssce, features.plot = gc_genes, point.size.use = .5, do.return = TRUE, return.plotlist = TRUE)
+redo_vplot(vplt)
+
+cell_id = tribble(~cluster_id, ~label,
+                  0, 'Per. Naive',
+                  1, 'Activ.',
+                  2, 'Mig. Activ.',
+                  3, 'PC high',
+                  4, 'Mig. Resting',
+                  5, 'PC low',
+                  6, 'Per. Naive II',
+                  7, 'Per. Naive III',
+                  8, 'Contam') %>% mutate(cluster_id = factor(cluster_id))
+                  
+```
+
+## TCF7 / Chemokines
+
+```{r chemokines_10x, fig.width = 6, fig.height = 5}
+chemokines1 = c('CXCR5', 'CXCR4','CXCR3', 'CCR6', 'CCR7', 'GPR183', 'LTA')
+chemokines = setdiff(c('CCR6', 'CCR7', 'CXCR5', 'CXCR4','CXCR3', 'CR2', 'TLR10', 'TCF7', 'TFRC', 'CXCL9', 'CXCL10'), chemokines1)
+
+Seurat::VlnPlot(ssce, features.plot = chemokines1, point.size.use = .5, x.lab.rot = TRUE)
+Seurat::FeaturePlot(ssce, features.plot = chemokines1, cols.use = c('grey30', 'green'), no.axes = TRUE, dark.theme = FALSE, pt.size = .5)
+Seurat::RidgePlot(ssce, features.plot = chemokines1)
+Seurat::DotPlot(ssce,  chemokines1)
+
+
+Seurat::VlnPlot(ssce, features.plot = chemokines, point.size.use = .5, x.lab.rot = TRUE)
+Seurat::FeaturePlot(ssce, features.plot = chemokines, cols.use = c('grey30', 'green'), no.axes = TRUE, dark.theme = FALSE, pt.size = .5)
+```
+
+
+## Plasma i vs plasma ii
+
+```{r plasma_label}
+plasma = Seurat::SubsetData(ssce, ident.use = c('Plasma(i)', 'Plasma(ii)'))
+
+plasma_markers = get_markers_and_heatmap(plasma)
+
+```
+
+
+## Naive i, ii, iii
+
+```{r naive_label}
+naive = Seurat::SubsetData(ssce, ident.use = c('Naive(i)', 'Naive(ii)', 'Naive(iii)'))
+
+naive_markers = get_markers_and_heatmap(naive)
+```
+
+## LMNA vs Memory
+
+```{r lmna_label}
+lmna = Seurat::SubsetData(ssce, ident.use = c('LMNA+', 'Memory'))
+
+lmna_markers = get_markers_and_heatmap(lmna)
+
+```
+
+# Recluster
+
+```{r split_nr4a}
+
+split_and_cluster = function(ssce_, id, orig_markers, extra = character(), resolution_=0.5, top_n = 10){
+  which_cells = Seurat::WhichCells(ssce_, ident = id)
+  ssce_id = Seurat::SubsetData(ssce_, ident.use = id)
+  ssce_id = Seurat::FindClusters(ssce_id, dims.use = 1:PCA_COMPONENTS, print.output = FALSE, plot.SNN = FALSE, resolution = resolution_)
+  
+  new_id = str_c(id, '.', letters[as.numeric(ssce_id@ident)])
+  ssce_id = Seurat::SetIdent(ssce_id, ident.use = new_id)
+  
+  Seurat::TSNEPlot(ssce_id)
+
+s_mark6 = Seurat::FindAllMarkers(ssce_id, logfc.threshold = log(2), only.pos = FALSE, min.diff.pct = 0, do.print = F)
+
+top10 = s_mark6 %>% group_by(cluster) %>% top_n(top_n, avg_logFC)
+markers_id = filter(orig_markers, cluster == id) %>% top_n(10, avg_logFC)
+
+
+  print(Seurat::DoHeatmap(object = ssce_id, genes.use = unique(c(markers_id$gene, extra, top10$gene)), slim.col.label = TRUE, remove.key = TRUE) + theme(axis.text.y = element_text(size = 4)))
+
+  Seurat::SetIdent(ssce_, cells.use = which_cells, ident.use = new_id)
+
+}
+
+ssce_nr4a = split_and_cluster(ssce, 'NR4A+', s_mark, extra = c('CCR6', 'EGR2', 'EGR3', 'CXCR4', 'BATF'), top_n = 20)
+```
+
+```{r split_lmna}
+ssce_lmna = split_and_cluster(ssce, 'LMNA+', s_mark, extra = c('CCR6', 'EGR2', 'EGR3', 'CXCR4', 'BATF'), top_n = 20)
+
+```
+
+# SHM
+
+```{r shm, dev = c('png', 'pdf')}
+ssce@meta.data$has_shm = 1*(!is.na(ssce@meta.data$shm_rate))
+
+has_shm = subset(ssce@meta.data, has_shm==1) %>% row.names()
+Seurat::FeaturePlot(ssce, features.plot = 'has_shm', cols.use = c('grey30', 'green'), no.axes = TRUE, dark.theme = FALSE, pt.size = 1)
+
+
+ssce_shm = Seurat::FilterCells(ssce, subset.names = 'PC3', cells.use = has_shm)
+
+Seurat::FeaturePlot(ssce_shm, features.plot = 'shm_rate', cols.use = c('grey30', 'green'), no.axes = TRUE, dark.theme = FALSE, pt.size = 1, cells.use = has_shm)
+
+Seurat::VlnPlot(ssce_shm, 'shm_rate', x.lab.rot = TRUE)
+plt = ggplot(ssce_shm@meta.data, aes(x = ident, y = shm_rate)) + geom_quasirandom(aes(color = class_heavy), size = 1) + stat_summary(color = 'blue') + xlab("Cluster") + scale_y_continuous(labels = scales::percent) + 
+  ylab("SHM Rate") + scale_color_discrete('Isotype') + theme(axis.text.x = element_text(angle =90))
+plt
+
+shm_genes = c('IGHD', 'CD27', 'GPR183',
+         'NR4A1', 'NR4A2', 'NR4A3')     
+
+meta_igd = cbind(ssce_shm@meta.data, Seurat::FetchData(ssce_shm, shm_genes, use.raw = FALSE)) %>%
+  dplyr::mutate(CD27f = factor(CD27>0, labels = c('CD27-', 'CD27+')),
+         IGDf = factor(IGHD> 0, labels = c('IgD-', 'IgD+')))
+
+
+clusters_use = tibble(ident= unique(meta_igd$ident), ident_collapse= str_extract(ident, '^[A-Z4a-z+]+'))
+
+meta_igd = left_join(meta_igd, clusters_use)
+
+plt = ggplot(meta_igd, aes(x = IGDf, y = shm_rate)) + facet_wrap(~ident_collapse) + geom_quasirandom( size = 1) + stat_summary(color = 'blue')
+plt
+plt+ aes(x = CD27f)
+plt + aes(x = interaction(IGDf, CD27f)) + theme(axis.text.x = element_text(angle = 90))
+
+```
+
+
+
+## Formal tests for association
+
+### SHM rate vs cluster ident
+
+```{r}
+lme_assoc0 = lme4::lmer(shm_rate*100 ~ ident+ (1|dataset:ident), data = meta_igd)
+
+tlme_assoc0 = tidy(lme_assoc0, conf.int = TRUE) %>% mutate(p.value = 2*(1-pnorm(abs(statistic))))
+
+
+ggplot(tlme_assoc0 %>% filter(str_detect(term, '^ident'))
+       , aes(x = term, y = estimate, ymin = conf.low, ymax = conf.high)) + geom_pointrange(position = position_dodge(width = .5)) + coord_flip() + geom_hline(yintercept = 0, lty = 2) + ylab('% point increase in SHM (vs Naive)')
+
+knitr::kable(tlme_assoc0)
+
+```
+
+### SHM rate vs expression
+
+```{r}
+gr = expand.grid(gene = shm_genes, ident_collapse = unique(meta_igd$ident_collapse), stringsAsFactors = FALSE)
+
+lme_assoc0 = map2_dfr(gr$gene, gr$ident_collapse, function(g, i){
+  f = formula(sprintf('shm_rate*100 ~ %s + ctotal_features + (1|sample)', g))
+  subdat = subset(meta_igd, ident_collapse == i)
+  subdat$ctotal_features = scale(subdat$total_features_by_counts)
+  ll = lme4::lmer(f, data = subdat)
+  tidied = tidy(ll, conf.int = TRUE) %>% mutate(p.value = 2*(1-pnorm(abs(statistic))))
+  tibble(gene = g, ident_collapse = i, fit = list(ll), tidied = list(tidied))
+})
+
+lme_assoc = unnest(lme_assoc0 %>% dplyr::select(-fit), cols = c(tidied))
+
+ggplot(lme_assoc %>% semi_join(tibble(term = shm_genes))
+       , aes(x = gene, color = ident_collapse, y = estimate, ymin = conf.low, ymax = conf.high)) + geom_pointrange(position = position_dodge(width = .5)) + coord_flip() + geom_hline(yintercept = 0, lty = 2) + ylab('% point increase in SHM per increase ')
+
+knitr::kable(lme_assoc %>% semi_join(tibble(term = c(shm_genes, 'ctotal_features'))))
+
+write_csv(meta_igd, 'refined/shm_select_exprs_etc.csv')
+```
+
+
+```{r smh_gene}
+get_prediction = function(x){
+  newx = model.frame(x)
+  newx$ctotal_features = 0
+  px = predict(x, newdata = newx, re.form = NA)
+  tibble(x = newx[,2], y = px)
+}
+
+lme_smooths = lme_assoc0 %>% transmute(gene, ident_collapse, prediction = map(fit, get_prediction)) %>% unnest(cols = c(prediction))
+                                   
+                                 
+smooth = ggplot(meta_igd, aes(x = IGHD, y = shm_rate*100)) + geom_jitter(size = 1, alpha = .5, width = .2, height = 0)  + facet_wrap(~ident_collapse) + xlim(0, 5) + ylab("SHM Percent") + theme_minimal()
+
+smooth  + xlab('Normalized IGHD') + geom_line(data = filter(lme_smooths, gene == 'IGHD'), mapping = aes(x = x, y = y), color = 'blue', lwd = 1)
+
+smooth + aes(x = GPR183)+ xlab('Normalized GPR183') + geom_line(data = filter(lme_smooths, gene == 'GPR183'), mapping = aes(x = x, y = y),  color = 'blue', lwd = 1)
+
+
+smooth + aes(x = NR4A1)  + geom_line(data = filter(lme_smooths, gene == 'NR4A1'), mapping = aes(x = x, y = y),  color = 'blue', lwd = 1)
+smooth + aes(x = NR4A2)  + geom_line(data = filter(lme_smooths, gene == 'NR4A2'), mapping = aes(x = x, y = y),  color = 'blue', lwd = 1)
+smooth + aes(x = NR4A3)  + geom_line(data = filter(lme_smooths, gene == 'NR4A3'), mapping = aes(x = x, y = y), color = 'blue', lwd = 1)
+
+smooth + aes(x = CD27)  + geom_line(data = filter(lme_smooths, gene == 'CD27'), mapping = aes(x = x, y = y), color = 'blue', lwd = 1)
+```
+
+Somatic hypermutation rates (only among cells with recovered BCR!)
+
+
+
+## BCR recovery
+
+```{r}
+plt = ggplot(ssce@meta.data, aes(x = ident, fill = factor(has_shm))) + coord_flip() 
+plt + facet_wrap(~dataset, scales = 'free_x') + geom_bar(position = 'stack') 
+plt + geom_bar(position = 'fill')
+
+(plt %+% dplyr::filter(ssce@meta.data, !is.na(class_heavy))) + aes(fill = class_heavy) + geom_bar(position = 'stack')
+
+(plt %+% dplyr::filter(ssce@meta.data, !is.na(class_heavy))) + aes(fill = class_heavy) + geom_bar(position = 'stack') + facet_wrap(~dataset)
+
+
+ggplot(ssce@meta.data, aes(x = ident, y = ifelse(is.na(umis_supporting_heavy), 0, umis_supporting_heavy))) + geom_boxplot() + scale_y_continuous(trans = 'log1p') + ylab('# Heavy-chain UMIS')
+```
+
+## CDR3 length
+
+```{r cdr3_length}
+smooth + aes(x = NR4A1, y  = cdr3_len_heavy) + ylim(0, 80)
+smooth + aes(x = GPR183, y  = cdr3_len_heavy) + ylim(0, 80)
+
+smooth + aes(x = NR4A1, y  = cdr3_len_light) + ylim(0, 50)
+smooth + aes(x = GPR183, y  = cdr3_len_light) + ylim(0, 50)
+
+
+gr = expand.grid(outcome = c('cdr3_len_light', 'cdr3_len_heavy'), stringsAsFactors = FALSE)
+
+meta_igd$ident_collapse = factor(meta_igd$ident_collapse) %>% relevel('Naive')
+
+lme_assoc = map_dfr(gr$outcome, function(o){
+  f = formula(sprintf('%s ~ ident_collapse + total_features_by_counts + (1|sample)', o))
+  ll = lme4::lmer(f, meta_igd)
+  tidy(ll, conf.int = TRUE) %>% mutate(outcome = o, p.value = 2*(1-pnorm(abs(statistic))), ident_collapse = i)
+})
+
+ggplot(lme_assoc %>% filter(str_detect(term, 'ident'))
+       , aes(x = term, y = estimate, ymin = conf.low, ymax = conf.high)) + geom_pointrange(position = position_dodge(width = .5)) + coord_flip() + geom_hline(yintercept = 0, lty = 2) + facet_wrap(~outcome, scales = 'free') +ggtitle('BCR properties by subpopulation', subtitle = 'Reference: naive')
+
+knitr::kable(lme_assoc %>% filter(str_detect(term, 'ident')))
+
+```
+
+(Naive is reference here)
+
+# "GC1" cluster 1 distribution within samples
+
+```{r cluster1_assoc, dev = c('png', 'pdf'), fig.width = 4, fig.height = 4}
+md = ssce@meta.data %>% mutate(cluster = res.0.5, IGHD = Seurat::FetchData(ssce, 'IGHD', use.raw = TRUE) %>% as.vector(), IGDf = factor(IGHD> 0, labels = c('IgD-', 'IgD+')))
+
+gc_like = md %>% group_by(sample, pop, dataset) %>% do({
+  bt = binom.test(sum(.$cluster == '1'), n = nrow(.))
+  td = broom::tidy(bt)
+  td
+})
+
+md = left_join(md, gc_like) %>% mutate(sample = forcats::fct_reorder(factor(sample), estimate))
+
+distr_plot = ggplot(md, aes(x = dataset)) + ylab('Proportion of cells') + scale_fill_discrete('Cluster ID') + coord_flip() +  theme_minimal() + theme(legend.pos = 'right')
+
+distr_plot + geom_bar(aes(fill = factor(cluster)), position = 'fill')
+distr_plot + aes(fill = (cluster == '1'), alpha=IGDf) + geom_bar(position = 'fill') + scale_fill_discrete('Cluster 1')
+
+distr_plot + geom_bar(aes(fill = factor(cluster)))
+
+gc_like = ungroup(gc_like) %>% mutate(dataset = forcats::fct_reorder(factor(dataset), estimate))
+
+ggplot(gc_like, aes(x = dataset, ymin = conf.low, ymax = conf.high, y = estimate)) + geom_pointrange() + coord_flip() + theme_minimal() + ylab('Proportion NR4A+ cells')
+
+#write_csv(gc_like %>% select(sample:dataset, proportion_cluster1 = estimate, cluster1 = statistic, total_cells = parameter, conf.low, conf.high), path = '02sle_ra_integration_files/sbg_cluster0_counts.csv')
+
+cluster_counts = md %>% group_by(dataset, cluster) %>% summarize(n()) %>% tidyr::spread(cluster, `n()`, fill = 0)
+
+#write_csv(cluster_counts, path = '02sle_ra_integration_files/sbg_cluster_counts.csv')
+
+```
+
+
+# Clusterprofiler
+
+```{r}
+library(clusterProfiler)
+## install_github('clusterProfiler.dplyr')
+
+remap = bitr(unique(s_mark$gene), 'SYMBOL', 'ENTREZID', 'org.Hs.eg.db', drop = FALSE)
+
+universe =  bitr(rownames(sce), 'SYMBOL', 'ENTREZID', 'org.Hs.eg.db', drop = FALSE)
+
+s_mark = left_join(s_mark, remap, by = c('gene' = 'SYMBOL')) %>% mutate(direction = sign(avg_logFC)) %>% group_by(cluster) %>% mutate(rank = rank(p_val_adj))
+
+cluster_enriched_genes = dplyr::filter(s_mark, p_val < .05, avg_logFC>0)
+
+cc_go = compareCluster(ENTREZID ~ cluster, data = cluster_enriched_genes, OrgDb = 'org.Hs.eg.db', universe = universe$ENTREZID, readable = TRUE)
+```
+
+```{r go, fig.width = 8, fig.height = 8}
+cc_go@compareClusterResult$Description = str_wrap(cc_go@compareClusterResult$Description, width = 60)
+dotplot(cc_go, font.size = 8)
+```
+
+```{r nidageneset, dev = c('png', 'pdf')}
+b_cell_list = readxl::read_excel('data/bcell_gene_list_nida 7.xlsx') %>% gather(key = 'term', value = 'gene') %>% mutate(gene = toupper(gene)) %>% mutate(gene = str_replace(gene, '/// .+', '')) %>% mutate( gene = str_replace(gene, '/.+', '')) %>% na.omit() %>% dplyr::filter(term != 'ACR')
+
+overall_prop = tibble::enframe(Matrix::rowMeans(ssce@raw.data>0), name = 'gene', value = 'prop_expressed') %>%
+  right_join(b_cell_list)
+
+missing_genes = overall_prop %>% group_by(term) %>% summarize(missing = sum(is.na(prop_expressed)), total = n())
+
+ggplot(overall_prop, aes(x = term, y = prop_expressed)) + geom_quasirandom() + 
+  xlab('') + ylab("Proportion expressing cells") + coord_flip()
+
+cluster_prop = left_join(b_cell_list, s_mark) %>% tidyr::complete(tidyr::nesting(term, gene), cluster, fill = list(pct.1 = 0)) %>% dplyr::filter(!is.na(cluster), !is.na(term))
+
+plt = ggplot(cluster_prop, aes(color = cluster, x = cluster, y = pct.1)) +
+  xlab('') + ylab("Proportion expressing cells") + coord_flip() + facet_wrap(~term)
+
+plt + geom_boxplot(outlier.size = 0)
+plt + stat_summary()
+
+
+term2name = b_cell_list %>% dplyr::select(term) %>% unique() %>% mutate(name = term)
+```
+
+
+```{r}
+cc_blist = compareCluster(gene ~ cluster, data = cluster_enriched_genes, fun = 'enricher', TERM2GENE = b_cell_list, TERM2NAME = term2name, pvalueCutoff = .05, pAdjustMethod='none', universe = rownames(ssce@raw.data))
+
+dotplot(cc_blist)
+```
+
+
+## BTM
+
+```{r btm_enrich}
+named_sort = function(x, nm) sort(setNames(x, nm), decreasing = TRUE)
+
+split_matrix_row = function(m, i){
+  si = split(seq_along(i), i)
+  lapply(si, function(ii) m[,ii,drop = FALSE])
+}
+
+get_cluster_zscores = function(obj){
+  ng = nrow(obj@data)
+  obj_split = split_matrix_row(obj@data, obj@ident)
+  nc = length(obj_split)
+  vars = do.call(rbind, lapply(obj_split, function(x) matrixStats::rowVars(as.matrix(x))))
+  means = do.call(rbind, lapply(obj_split, Matrix::rowMeans))
+  ns = do.call(rbind, lapply(obj_split, ncol))
+  
+  grand_var = rep(NA_real_, )
+  logfc = delta = means
+  for(i in seq_len(ng)){
+    grand_var[i] = max(1/weighted.mean(1/vars[,i], ns), 1e-6)
+    logfc[,i] = means[,i]*(nc+1)/(nc) - mean(means[,i])
+    delta[,i] = logfc[,i]/sqrt(grand_var[i])
+  }
+  out = as_tibble(list(avg_logFC = as.vector(logfc), 
+               delta = as.vector(delta),
+         cluster = as.vector(rep(rownames(logfc), times = ng)),
+         gene = as.vector(rep(colnames(logfc), each = nc))))
+  out
+}
+
+
+s_mark_all = get_cluster_zscores(ssce)
+
+effect_group = purrr::map(split(s_mark_all, s_mark_all$cluster), function(x) named_sort(x[['avg_logFC']], x[['gene']]))
+
+effect_group_sig = purrr::map(split(s_mark, s_mark$cluster), function(x) named_sort(x[['avg_logFC']], x[['gene']]))
+
+do_gsea_bygroup = function(set_list, ...){
+   res = purrr::map(set_list, GSEA, ...)
+   class(res) = c('GroupedGSEA', class(res))
+   res
+}
+
+as.data.frame.GroupedGSEA = function(x, topn = Inf, wrap_len = 30){
+  gsea_groupdf = purrr::map_dfr(x, as.data.frame, .id = 'cluster')
+  gsea_groupdf = gsea_groupdf %>% group_by(cluster) %>% dplyr::mutate(rank = rank(p.adjust)) %>% group_by(ID) %>% 
+    dplyr::mutate(min_rank = min(rank), 
+                  NES = ifelse(!is.finite(NES), 0, NES),
+                  signed_log10p = -log10(pvalue)*sign(enrichmentScore),
+                  cluster = factor(cluster, levels = names(levs)))                   
+
+  gsea_groupdf = gsea_groupdf %>% dplyr::filter(min_rank <= topn)
+
+  gsea_groupdf = ungroup(gsea_groupdf) %>% dplyr::mutate(ID_name = str_wrap(ID, wrap_len))
+  gsea_groupdf
+
+}
+
+
+gmtfile <- 'data/BTM_for_GSEA_20131008.gmt'
+btm <- read.gmt(gmtfile)
+cc_btm = compareCluster(gene ~ cluster, data = cluster_enriched_genes, fun = "enricher", TERM2GENE = btm, universe = rownames(ssce@raw.data))
+dotplot(cc_btm, font.size = 6, showCategory = 3) + theme(axis.text.x = element_text(angle = 90))
+
+```
+
+```{r btm_gsea}
+gsea_plot = ggplot(mapping = aes(y = cluster, x = NES, fill = cut(p.adjust, c(0, .01, .05, .1, .2,  1)))) + geom_point(shape = 21) + scale_fill_brewer('FDR', direction = -1, type = 'seq', palette = 'YlOrBr') + facet_wrap(~ID_name) + theme_minimal() + theme(strip.text = element_text(size = 5)) + geom_vline(xintercept = 0, lty = 2) 
+
+scale_fill_diverging  = function(...) scale_fill_gradient2(low = scales::muted('blue'), mid = 'grey80', high = scales::muted('red'), ...)
+
+gsea_btm = do_gsea_bygroup(effect_group, TERM2GENE = btm, nPerm = 1e4, pvalueCutoff = 1.1)
+
+gsea_plot %+% as.data.frame(gsea_btm, topn = 6)
+
+```
+
+## GSEA B cell list
+
+```{r, fig.width = 20, fig.height = 4}
+gsea_bcell_list = do_gsea_bygroup(effect_group, TERM2GENE = b_cell_list, nPerm = 1e4, pvalueCutoff = 1.1)
+
+filter_gsea = function(gsea_result, sets){
+  stopifnot(length(setdiff(sets, names(gsea_result@geneSets)))==0)
+  gsea_result@result = subset(gsea_result@result, ID %in% sets)
+  gsea_result@geneSets =  gsea_result@geneSets[sets]
+  gsea_result
+}
+
+rbind_gsea = function(r1, r2){
+  r1@result = rbind(r1@result, r2@result)
+  r1@geneSets = c(r1@geneSets, r2@geneSets)
+  r1
+}
+
+
+
+enrichplot::heatplot(filter_gsea(gsea_bcell_list$`NR4A+`, c('sorted_GC', 'Bm1')), foldChange = 2^(effect_group$`NR4A+`))
+```
+
+```{r networkplot, fig.width=14, fig.height=14}
+
+to_plot = c('GC DZ', 'GC LZ', 'PreM signature', 'chemokines and receptors', 
+            'cytokines and chemokines', "Milpied cluster 3 (IZ)")
+
+gsea_networks_plot = rbind_gsea(filter_gsea(gsea_bcell_list$`NR4A+`, to_plot),
+                                filter_gsea(gsea_btm$`NR4A+`, "AP-1 transcription factor network (M20)") 
+                                )
+
+enrichplot::cnetplot(gsea_networks_plot, foldChange = 2^(effect_group$`NR4A+`), colorEdge = TRUE, layout = 'nicely', showCategory = 8)
+
+```
+
+
+```{r gsea_heatmap}
+to_include = c("Activated (Ellebedy)", "ASC (Ellebedy)",
+               "N (Ellebedy)", "RM (Ellebedy)", "Bm1", "Bm5", "sorted_GC", "AP-1 transcription factor network (M20)"," MHC-TLR7-TLR8 cluster (M146)", "NR4A1 > 400", "Plasma cell surface signature (S3)")
+
+to_include = c("N (Ellebedy)", "Bm1", "NR4A1 > 400", "RM (Ellebedy)", "AP-1 transcription factor network (M20)", "Bm5", "ASC (Ellebedy)", "Plasma cell surface signature (S3)", "sorted_GC")
+
+to_include = c("N (Ellebedy)", "Bm1", "RM (Ellebedy)", "Bm5", "sorted_GC","GC LZ", "Milpied cluster 1 (LZ)", "GC DZ","Milpied cluster 3 (IZ)",  "ASC (Ellebedy)", "Plasma cell surface signature (S3)")
+
+to_include = c("B cell surface signature (S2)", "Bm1", "Naive B cell surface signature (S8)", "Bm5","Memory B cell surface signature (S9)", "GC LZ", "GC DZ", "Plasma cell surface signature (S3)", "ASC (Ellebedy)")
+
+
+sets_of_interest = filter(bind_rows(as.data.frame(gsea_bcell_list), as.data.frame(gsea_btm)), ID %in% to_include)
+
+
+gsea_bcell_tab = spread(sets_of_interest %>% dplyr::select(cluster, ID, signed_log10p), key = cluster, value = signed_log10p)
+
+gsea_bcell_mat = as.matrix(gsea_bcell_tab[,-1])
+rownames(gsea_bcell_mat) = gsea_bcell_tab[[1]]
+gsea_bcell_mat = gsea_bcell_mat[to_include,]
+
+BrBGpal = function(n) colorRampPalette(rev(RColorBrewer::brewer.pal(5, 'RdYlBu')))(n)
+cor_dist = function(x) as.dist(1 - cor(t(x), use = 'pairwise'))
+
+#gplots::heatmap.2(gsea_bcell_mat, Colv = FALSE, col = 'BrBGpal', trace = 'none', margins = c(8, 8), distfun = cor_dist, dendrogram = 'none')
+
+gplots::heatmap.2(gsea_bcell_mat, Colv = FALSE, col = 'BrBGpal', trace = 'none', margins = c(8, 8), dendrogram = 'none', Rowv = FALSE, rowsep = length(to_include)-1)
+
+```
+
+
+
+## Write out enrichment results
+
+```{r}
+all_enrichment = bind_rows(
+  GO = as.data.frame(cc_go),
+  B_CELL_5 = as.data.frame(cc_blist),
+  BTM = as.data.frame(cc_btm),
+  .id = 'SET'
+)
+
+write_csv(all_enrichment, path = 'refined/gene_enrichment_results.csv')
+
+write_csv(bind_rows(as.data.frame(gsea_bcell_list), as.data.frame(gsea_btm)), path = 'refined/gsea_results.csv')
+
+```
+
+# Split clones
+
+```{r}
+cdr_seurat = colData(sce) %>% as.data.frame() %>% mutate(cluster_id = ssce_whole@ident, label = cluster_id)
+
+cdr_clusters = cdr_seurat %>% group_by(cluster_idx.1) %>% summarize(count = n(), n_cluster_id = length(unique(cluster_id))) 
+
+split_cluster = cdr_clusters %>% dplyr::filter(count > 1, !is.na(cluster_idx.1))
+                                                                
+cdr_cluster2 = cdr_seurat %>% dplyr::select(Barcode:umis_supporting_heavy, cluster_idx.1, cluster_id, dataset, label) %>% left_join(split_cluster) %>% mutate(cdr3 = fct_reorder(cluster_idx.1, count, mean) %>% droplevels) %>% cbind(ssce_whole@dr$tsne@cell.embeddings) %>% mutate(expanded_cid = factor(ifelse(!is.na(count), cluster_idx.1, NA)))
+
+ggplot(cdr_cluster2, aes(x = tSNE_1, y = tSNE_2, color = expanded_cid)) + geom_point() + theme(legend.pos = 'none')
+
+ggplot(cdr_seurat %>% semi_join(split_cluster), aes(x = label, y = cluster_idx.1)) + geom_jitter(alpha = .5, width = .2, height = .2) +  geom_path(aes(group = cluster_idx.1)) + theme_gray()
+
+ggplot(cdr_cluster2, aes(x = cdr3, fill = dataset)) + geom_bar() + coord_flip() + ylab("# cells") + xlab("Clone ID") + theme_minimal() + scale_fill_discrete(drop = FALSE) + facet_grid(~label, space = 'free', scales = 'free') + theme(strip.text.x = element_text(angle = 90))
+```
+
+
+
+```{r}
+ig_coexp = cbind(cdr_seurat,  t(assay(sce)[c('IGHD', 'IGHM', 'IGHG3'),]) %>% as.matrix()) 
+
+ig_plot = ggplot(ig_coexp, aes(x = IGHD, y = AMmisc::clamp(IGHM, 100))) + geom_jitter(aes(color = class_heavy), width = .02, height = .02) + scale_x_continuous(trans = scales::log1p_trans()) + scale_y_continuous(trans = scales::log1p_trans()) + facet_wrap(~label, scales = 'free') + geom_smooth(method = 'lm')
+
+ig_plot + ylab('IGHM')
+ig_plot + aes(x = AMmisc::clamp(IGHG3, 100)) + ylab('IGHG3')
+
+```
+
+# Doublets and non-canonical BCR
+
+```{r doublet_qc}
+na_is_zero = function(x) ifelse(is.na(x), 0, x)
+
+paired_seurat = left_join(cdr_seurat, paired_table) %>%
+    dplyr::select(chain_type, label, barcode, dataset, sample, pop, cluster_idx.1, log10_total_counts,pct_counts_in_top_50_features, log10_total_features_by_counts, umis_supporting_heavy, umis_supporting_light) %>% mutate(log10_bcr_umis = log10(na_is_zero(umis_supporting_heavy)+na_is_zero(umis_supporting_light))) %>% 
+    gather(,,log10_total_counts:log10_bcr_umis) %>%
+    mutate(chain_type = factor(chain_type))
+
+paired_qc_plt = ggplot(paired_seurat, aes(x = chain_type, y = value)) + facet_wrap(~key, scales = 'free_y') + theme_minimal() + theme(axis.text.x = element_text(angle = 90)) + geom_boxplot() + ylab('')
+
+paired_qc_plt
+
+#aes(color = str_detect(chain_type, fixed('+')))+ scale_color_discrete('BCR type', labels = c('Canonical', 'Non-canonical', 'Missing')) 
+```
+
+# Write out data
+
+```{r}
+seurat_cdata = cbind(ssce_whole@meta.data, Seurat::GetDimReduction(ssce_whole, 'tsne', 'cell.embeddings'))
+seurat_fdata = rowData(sce)
+seurat_exprs = counts(sce)
+stopifnot(all(seurat_cdata$total_counts == Matrix::colSums(seurat_exprs)))
+
+write_csv(seurat_cdata, 'refined/filtered_clustered_cdata.csv')
+write_csv(seurat_fdata %>% as.data.frame, 'refined/filtered_clustered_fdata.csv')
+saveRDS(seurat_exprs, 'refined/filtered_clustered_exprs.rds')
+
+write_csv(s_mark, 'refined/cluster_markers.csv')
+```
+
+

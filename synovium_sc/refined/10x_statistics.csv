@@ -1,0 +1,6 @@
+run,Percent Mapping to Genome,Percent Mapping to Transcriptome
+deliv_Anolik_042318_cellRanger_only_filtered//Sample_RA134BLD19Pos/outs/metrics_summary.csv,73.6%,47.0%
+deliv_Anolik_042318_cellRanger_only_filtered//Sample_RA134Syn19Pos_R/outs/metrics_summary.csv,67.8%,47.2%
+deliv_Anolik_042318_cellRanger_only_filtered//Sample_RA172Syn19Pos/outs/metrics_summary.csv,68.7%,46.2%
+deliv_Anolik_042318_cellRanger_only_filtered//Sample_RA195SYN19Pos/outs/metrics_summary.csv,81.3%,58.7%
+deliv_Anolik_042318_cellRanger_only_filtered//Sample_RA221Syn19Pos/outs/metrics_summary.csv,73.7%,56.1%

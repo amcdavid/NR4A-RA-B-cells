@@ -1,0 +1,358 @@
+---
+title: "Clustering BCR"
+author: "Andrew McDavid"
+date: '`r Sys.Date()`'
+output:
+  slidy_presentation:
+    font_adjustment: +1
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+extensions: inline_footnotes
+---
+
+# Load libraries
+
+```{r library, message = FALSE, warning = FALSE, results = 'hide'}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+knitr::opts_chunk$set(cache=TRUE, autodep=TRUE)
+knitr::opts_chunk$set(dev = c('png', 'pdf'), fig.width = 6, fig.height = 4)
+library(broom)
+library(tidyverse)
+library(ggbeeswarm)
+library(AMmisc) # devtools::install_github('amcdavid/AMmisc')
+
+#library(ShortRead)
+library(ggdendro)
+library(RColorBrewer)
+library(CellaRepertorium) # 3257fe9 v0.8.1
+```
+
+# Filter contigs
+
+```{r}
+MIN_CDR3_AA = 5
+good_bar = read_csv('refined/good_barcodes_combined.csv') %>% mutate(dataset = factor(paste(sample, pop, sep = '_')))
+True = 'True'
+good_chain = dplyr::filter(good_bar, full_length == True, productive == True, high_confidence == True, chain != 'Multi', str_length(cdr3) > MIN_CDR3_AA) %>% mutate(cdr3_length = str_length(cdr3_nt)) %>% mutate( fancy_name = fancy_name_contigs(., paste(sample, pop, sep = '_')), dataset = str_c(sample, '_', pop), isotype = str_extract(c_gene, 'IGH[ADGEM]'))
+ccdb = ContigCellDB_10XVDJ(good_chain, contig_pk = c('sample', 'pop', 'barcode', 'contig_id'), cell_pk = c('dataset', 'sample', 'pop', 'barcode'))
+
+```
+
+# Good cells
+
+```{r}
+good_cells = ccdb$cell_tbl
+
+```
+
+# Chain pairings
+
+```{r}
+paired_chain = enumerate_pairing(ccdb, chain_recode_fun = 'guess') %>% mutate(chain_type = str_c(pairing,'_', canonical))
+ccdb$cell_tbl = left_join(ccdb$cell_tbl, paired_chain)
+
+```
+
+
+```{r pairings}
+paired_table = paired_chain %>% group_by(dataset, canonical, pairing) %>% summarize(ncells = n()) 
+
+ggplot(paired_table, aes(x = dataset, fill = canonical, y = ncells)) + geom_col(position = 'stack') + coord_flip() + theme_minimal() + facet_wrap(~pairing, scales = 'free_x')
+
+ggplot(paired_table, aes(x = dataset, fill = pairing, y = ncells)) + geom_col(position = 'stack') + coord_flip() + theme_minimal() + theme(legend.position = 'right') + ylab('Number of barcodes')
+```
+Combinations of contigs recovered per cell.
+
+
+# Class vs UMI copies
+
+```{r}
+top_class = ccdb$contig_tbl %>% filter(ig_heavy, productive == 'True') %>% 
+    arrange(-umis) %>% group_by(sample, pop, barcode, dataset) %>% 
+    summarize(class = class[1], umis_supporting = umis[1], cdr3_len = str_length(cdr3_nt)[1], vj_shm_rate = (shm/len_without_d)[1])
+
+top_class_lite = ccdb$contig_tbl %>% filter(!ig_heavy, productive == 'True') %>% 
+    arrange(-umis) %>% group_by(sample, pop, barcode, dataset) %>% 
+    summarize(class = class[1], umis_supporting = umis[1], cdr3_len = str_length(cdr3_nt)[1], vj_shm_rate = (shm/len_without_d)[1])
+
+top_class_pair = full_join(top_class, top_class_lite, by = ccdb$cell_pk, suffix = c('_heavy', '_light'))
+
+ccdb$cell_tbl = left_join(ccdb$cell_tbl, top_class_pair, by = ccdb$cell_pk) %>% rowwise() %>% mutate(shm_rate = mean(c(vj_shm_rate_light, vj_shm_rate_heavy), na.rm = TRUE))
+
+
+top_class_plot = ggplot(top_class, aes(x = class, y = umis_supporting))+facet_wrap(~sample + pop, scales = 'free')  + theme_minimal() + xlab("Heavy chain class")  + geom_quasirandom(size= 1, alpha =.5)
+top_class_plot  + geom_hline(yintercept = 50, lty = 2) + scale_y_log10() + ylab('UMIs supporting contig')
+
+write_csv(ccdb$cell_tbl, path = 'refined/paired_chain_barcodes.csv')
+```
+
+Some evidence of bi-modality. Potentially naive isotypes (M/D) can be found at ~10 UMI-counts while class-switched types (A/G) are found at very high levels.
+
+# Class distribution
+
+```{r}
+ggplot(ccdb$cell_tbl, aes(fill = class_heavy, x = dataset)) + geom_bar(position = 'fill') + ylab('Proportion') + scale_y_continuous(labels = scales::percent)
+```
+
+# Cluster CDR3 AA sequences
+
+```{r}
+library(ggrepel)
+
+aa80 = cdhit_ccdb(ccdb, sequence_key = 'cdr3', type = 'AA', identity = .80, kmerSize = 4, min_length = MIN_CDR3_AA,G = 1, b = 20, cluster_name = 'aa80', showProgress = FALSE)
+
+aa80 = fine_clustering(aa80, sequence_key = 'cdr3_nt', type = 'DNA', keep_clustering_details = TRUE)
+
+dendro_plot = function(ccdb, idx, method = 'complete'){
+    h = filter(ccdb$cluster_tbl, !!sym(ccdb$cluster_pk) == idx) %>% pull(fc) %>% .[[1]]
+    quer = filter(ccdb$contig_tbl, !!sym(ccdb$cluster_pk) == idx) %>% ungroup()
+    hc = hclust(as.dist(h$distance_mat), method = method) %>% dendro_data(type = "rectangle")
+    hc$labels = cbind(hc$labels, quer)
+   ggplot(hc$segments, aes(x=x, y=y)) + geom_segment(aes(xend=xend, yend=yend)) + 
+  theme_classic() + geom_text_repel(data = hc$labels, aes(color = sample, label = class), size = 3, box.padding = 0) + scale_x_continuous(breaks = NULL) + ylab('AA Distance') + xlab('')
+}
+
+
+ggplot(aa80$cluster_tbl %>% filter(n_cluster>1) %>% select(aa80, n_cluster, avg_distance) %>% gather(key, value, -aa80) , aes(x = value))+ facet_wrap(~key, scales = 'free') + geom_histogram() + scale_y_sqrt()
+
+
+
+dna80 = cdhit_ccdb(filter_cdb(ccdb, chain == 'IGH'), sequence_key = 'cdr3_nt', type = 'DNA', identity = .80, kmerSize = 4, min_length = MIN_CDR3_AA*3-1,G = 1,cluster_name = 'dna80', showProgress = FALSE)
+
+dna80 = fine_clustering(dna80, sequence_key = 'cdr3_nt', type = 'DNA', keep_clustering_details = TRUE)
+
+dna80$contig_tbl = dna80$contig_tbl %>% group_by(dna80) %>% mutate(n_cluster = n(), n0 = sum(`d(medoid)`<=0), n3 =  sum(`d(medoid)`<=3))
+
+ggplot(filter(dna80$contig_tbl, n_cluster>1), aes(x = `d(medoid)`))+ geom_histogram() + scale_y_sqrt()
+```
+
+Over cluster on IGH (require only 65% DNA identity).  Among clusters of size >1, looks like should require distance = 0.
+
+Count number of elements within 3 NT of medoid
+
+```{r}
+jj = left_join(dna80$cluster_tbl, dna80$contig_tbl) %>% filter(n_cluster > 1, is_medoid)
+
+to_plot = filter(jj, n3 > 1) %>% arrange(desc(n3))
+map(head(to_plot$dna80, 3), ~ dendro_plot(dna80, .) + ylab("DNA Distance"))
+
+```
+
+Showing all clusters with >1 elements <= 3 to medoid (hence a compact core).  Most are highly expanded, identical clones. Would be hard to argue we should expand our definition of a clone from this.
+
+```{r}
+to_plot = filter(jj, n3 > 1, n3>n0) 
+map(to_plot$dna80, ~ dendro_plot(dna80, .) + ylab("DNA Distance"))
+
+```
+
+Here are the ones with `n3>n0`
+
+# Cluster CDR3 DNA
+
+```{r call_cdhit}
+
+ccdb = cdhit_ccdb(ccdb, sequence_key = 'cdr3_nt', identity = .97, 
+                  min_length = MIN_CDR3_AA*3,G = 1, s=1, cluster_name = 'dna97', showProgress = FALSE)
+
+ccdb = fine_clustering(ccdb, sequence_key = 'cdr3_nt', type = 'DNA', keep_clustering_details = TRUE)
+
+ggplot(ccdb$cluster_tbl %>% filter(n_cluster>1) %>% select(-fc) %>% gather(key, value, -dna97) , aes(x = value))+ facet_wrap(~key, scales = 'free') + geom_histogram() + scale_y_sqrt()
+
+
+
+
+to_plot = filter(ccdb$cluster_tbl, n_cluster > 50)
+map(to_plot$dna97, ~ dendro_plot(ccdb, .) + ylab("DNA Distance"))
+
+# write_csv(good_cluster, 'refined/good_barcodes_clustered.csv')
+# 
+# cluster_id = good_cluster %>% group_by(cluster_idx) %>% summarize(cdr3_representative = get_canonical_representative(cdr3, warn_if_distinct = TRUE))
+
+```
+
+We cluster the CDR3 DNA with [CD-HIT](http://weizhongli-lab.org/cdhit_suite/cgi-bin/index.cgi?cmd=cd-hit).  A sequence is included in a cluster if it matches by 100% similiarity and has the same CDR3 length.
+
+
+
+
+```{r}
+ccdb = canonicalize_cluster(ccdb, contig_filter_args = is_medoid, contig_fields = c('cdr3', 'cdr3_nt', 'chain', 'v_gene', 'd_gene', 'j_gene', 'class', 'shm'), representative = 'cdr3')
+```
+
+```{r datatable}
+MIN_OLIGO = 6
+
+oligo_clusters = filter(ccdb$cluster_tbl, n_cluster > MIN_OLIGO)
+oligo_contigs = ccdb
+oligo_contigs$contig_tbl = semi_join(oligo_contigs$contig_tbl, oligo_clusters, by = 'dna97')
+
+oligo_clusters = oligo_contigs$contig_tbl %>% group_by(dna97) %>% summarize(`n subjects observed` = length(unique(sample))) %>% left_join(oligo_clusters)
+
+oligo_clusters %>% select(dna97:cdr3, chain:j_gene, n_cluster:avg_distance) %>% DT::datatable()
+
+```
+Checking to see how many CDR3 sequences are present in expanded clonotypes. Expect only 1.
+
+There are `r nrow(oligo_contigs$cell_tbl)` cells that appear in cdr3 families that occur more than `r MIN_OLIGO` times.
+
+***
+
+```{r}
+oligo_plot = ggplot(oligo_contigs$contig_tbl, aes(x = representative, fill = class)) + geom_bar() + coord_flip() + scale_fill_brewer(type = 'qual') + theme_minimal() + scale_y_log10()
+oligo_plot 
+```
+
+```{r}
+oligo_plot + aes(fill =   sample) + facet_wrap(~pop)
+
+```
+
+***
+
+
+# igraph 
+
+```{r, eval = FALSE}
+library(igraph)
+graphs = cdhits_nest %>%rowwise() %>% do(graphs = {
+    d = .$dists %>% as.matrix
+    aff = 1-d/(max(d) + .00001)
+    graphs = graph.adjacency(aff, weighted = TRUE, mode = 'undirected')
+    V(graphs)$dataset = .$data$dataset
+    V(graphs)$class = .$data$class
+    simplify(graphs)
+})
+
+plot(graphs[[1,1]], vertex.label = V(graphs[[1,1]])$class, vertex.color = V(graphs[[1,1]])$dataset, edge.lty = 0)
+
+joined = graphs$graphs[[1]] + graphs$graphs[[2]]
+
+union_with_attributes = function(x, y){
+    z = union(x,y, byname = TRUE)
+    vattr_x = vertex_attr(x)
+    vattr_y = vertex_attr(y)
+    vattr_z = lapply(seq_along(vattr_x), function(i) c(vattr_x[[i]], vattr_y[[i]]))
+    names(vattr_z) = names(vattr_x)
+    vertex_attr(z) = vattr_z
+    
+    eattr_x = edge_attr(x)
+    eattr_y = edge_attr(y)
+    eattr_z = lapply(seq_along(eattr_x), function(i) c(eattr_x[[i]], eattr_y[[i]]))
+    names(eattr_z) = names(eattr_x)
+    edge_attr(z) = eattr_z
+    z
+}
+
+joined = union_with_attributes(graphs$graphs[[1]], graphs$graphs[[2]])
+
+plot(joined, vertex.label = NA, vertex.color = V(joined)$dataset, edge.lty = 0, vertex.size = 3, layout = layout_with_graphopt)
+
+joined = purrr::reduce(graphs$graphs, union_with_attributes)
+```
+
+
+
+# Chains present
+
+```{r}
+oligo_pair_types = left_join(oligo_contigs$cell_tbl, oligo_contigs$contig_tbl, by = c("barcode", "dataset", 'sample', 'pop'))
+ggplot(oligo_pair_types, aes(x = representative, fill = canonical)) + geom_bar() + coord_flip() + theme_minimal() + facet_wrap(~pairing, scales = 'free_x')
+
+```
+
+```{r}
+segment_plot = ggplot(oligo_pair_types, aes(y = representative, x = v_gene, color = dataset)) + geom_jitter() + theme(axis.text.x = element_text(angle = 90))
+segment_plot 
+segment_plot + aes(x = j_gene)
+```
+
+```{r expanded_clones, fig.width = 8, fig.height=10}
+class_colors = data_frame(class =  unique(ccdb$cluster_tbl$class)) %>% mutate(class_color =  brewer.pal(length(class),"Set1"))
+
+#key = ggplot(class_colors %>% mutate(y = factor(0),  class_fct = factor(class) %>% fct_explicit_na()), aes(x = class_fct, y = y, color = class_fct)) + geom_point() + scale_color_manual(name = "class",values = class_colors$class_color, labels = class_colors$class)
+
+
+feature_tbl = ccdb$cluster_tbl %>% left_join(class_colors) %>% select(-fc)
+
+ccdb$cluster_pk = 'representative'
+pairing_list = pairing_tables(ccdb, table_order = 2, orphan_level = 1) 
+
+
+
+
+pairs_plt = ggplot(pairing_list$cell_tbl, aes(x = cluster_idx.1_fct, y = cluster_idx.2_fct, color = sample, shape = pop)) + geom_jitter(width = .3, height = .3) + theme_minimal()
+
+ylab = data_frame(representative =  ggplot_build(pairs_plt)$layout$panel_params[[1]]$y.label) %>% left_join(feature_tbl) %>% mutate(class_color = ifelse(is.na(class_color), '#E41A1C', class_color))
+
+xlab = data_frame(representative =  ggplot_build(pairs_plt)$layout$panel_params[[1]]$x.label) %>% left_join(feature_tbl) %>% mutate(class_color = ifelse(is.na(class_color), '#E41A1C', class_color))
+
+pairs_plt = pairs_plt + theme(axis.text.x = element_text(angle = 90, color = xlab$class_color, size = 8), axis.text.y = element_text(color = ylab$class_color, size = 8))
+
+pairs_plt
+```
+
+
+```{r, fig.width=2, fig.height = 4}
+plot.new()
+legend(x = c(0, 1), y = c(0, 1), legend = class_colors$class, fill = class_colors$class_color)
+
+```
+
+
+
+```{r}
+write_csv(CellaRepertorium:::left_join_warn(ccdb$cell_tbl, pairing_list$cell_tbl, by = ccdb$cell_pk, overwrite = TRUE), path = 'refined/expanded_clones.csv')
+
+```
+
+# Questions
+
+1.  Can we test for selection by comparing convergence of AA sequence compared to DNA?
+2.  What's up with the multi-light chain clones?  (Seem to be a known phenomena..)
+3.  Is CDR3 length shorter in expanded clones?  Is shorter in IgG vs D (known).
+
+# CDR3 length by class
+
+```{r}
+top_class_plot  + aes(y = cdr3_len) + stat_summary(color = 'blue')
+```
+
+# All paired chains
+
+```{r}
+len_one_or_na = function(x){
+    if(length(x) == 1L) x else NA_real_
+}
+
+good_cluster_spread = reshape2::dcast(ccdb$contig_tbl, sample + pop + barcode ~ chain, value.var = 'dna97', fun.aggregate = len_one_or_na)
+
+good_cluster_spread = good_cluster_spread %>% group_by(IGH, IGK, IGL, sample, pop) %>% summarize(n()) %>% mutate(chain_per_clone = 1*(!is.na(IGH)) + 1*(!is.na(IGK)) + 1*(!is.na(IGL)), multiplicity_cls = cut(`n()`, breaks = c(0, 1, 2, 5, 20, 100, 500)))
+
+ggplot(filter(good_cluster_spread, chain_per_clone > 0) %>% group_by(sample, pop, multiplicity_cls, chain_per_clone) %>% summarize(dataset = paste(sample, pop, sep = '_')[1], n()), aes(x = multiplicity_cls, color = dataset, y = `n()`)) + geom_line(aes(group = dataset)) + geom_point() + facet_wrap(~ factor(chain_per_clone)) + scale_y_log10() + theme_minimal() + theme(axis.text.x = element_text(angle = 90)) + ylab('Number of times observed') + xlab('Clonal Multiplicity')
+```
+
+# Clones per capture and BCR recovered cell
+
+Per email from Michelle Zanche, 1740 cells per sample were targeted, and this yielded
+```{r}
+tribble( ~ sample, ~ pop, ~ yield, ~ viability,
+          'RA221', 'SYN',  535,  .88,
+         'RA195', 'SYN', 668, .65,
+         'RA134', 'BLD', 1438, .75,
+         'RA172', 'SYN', 486, .5,
+         'RA134', 'SYN', 844, NA)
+         
+```
+
+```{r}
+library(ggrepel)
+two_or_more = filter(good_cluster_spread, `n()` > 1) %>% group_by(sample, pop) %>% summarize(n_doublet = n())
+
+recovered_cells = good_bar %>% group_by(sample, pop) %>% summarize(n_barcode = length(unique(barcode)))
+
+ggplot(left_join(two_or_more, recovered_cells), aes(x = n_barcode, y = n_doublet, label = paste(sample, pop, sep = '_'))) +geom_point() + geom_text_repel() + geom_smooth(method = 'lm') + ylab('Clones detected > 1 time') + xlab("Cells with successful BCR reconstruction") + theme_minimal()
+
+```

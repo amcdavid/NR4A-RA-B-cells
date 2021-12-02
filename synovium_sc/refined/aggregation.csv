@@ -1,0 +1,6 @@
+library_id,molecule_h5
+RA134_BLD,./Sample_RA134BLD19Pos/outs/molecule_info.h5
+RA134_SYN,./Sample_RA134Syn19Pos_R/outs/molecule_info.h5
+RA172_SYN,./Sample_RA172Syn19Pos/outs/molecule_info.h5
+RA195_SYN,./Sample_RA195SYN19Pos/outs/molecule_info.h5
+RA221_SYN,./Sample_RA221Syn19Pos/outs/molecule_info.h5
