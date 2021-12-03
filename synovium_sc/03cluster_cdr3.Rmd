@@ -21,7 +21,6 @@ knitr::opts_chunk$set(dev = c('png', 'pdf'), fig.width = 6, fig.height = 4)
 library(broom)
 library(tidyverse)
 library(ggbeeswarm)
-library(AMmisc) # devtools::install_github('amcdavid/AMmisc')
 
 #library(ShortRead)
 library(ggdendro)

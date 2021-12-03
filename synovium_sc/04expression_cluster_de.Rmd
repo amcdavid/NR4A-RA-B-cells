@@ -9,14 +9,8 @@ output:
     toc_float: yes
   slidy_presentation:
     font_adjustment: +1
-extensions: inline_footnotes
+    extensions: inline_footnotes
 ---
-
-# Todo
-
-Try scds for doublet detection
-Class switch distributions by cluster
-BCR (molecules) recovery by cluster
 
 # Libraries
 
@@ -25,7 +19,6 @@ knitr::opts_chunk$set(echo = TRUE, cache=TRUE, autodep=TRUE, message=FALSE, warn
 knitr::opts_chunk$set(dev = c('png', 'pdf'))
 library(broom)
 library(ggbeeswarm)
-library(AMmisc) # devtools::install_github('amcdavid/AMmisc')
 
 library(SingleCellExperiment)
 library(scater)
@@ -35,20 +28,21 @@ library(ggrepel)
 library(eulerr)
 VDJ = TRUE
 
-## Other packages from bioconductor:
-# DropletUtils, scran.  Install with BiocInstaller::biocLite(c('DropletUtils', 'scran'))
-## Other packages from cran:
-# install.packages(c('Seurat', 'readxl'))
+clamp = function(x, modulus = 5) {
+    x[x < -modulus] = -modulus
+    x[x > modulus] = modulus
+    x
+}
 
 ```
 
 # Load data
 
 ```{r fileset_metadata}
-pipestance_all = list.files('deliv_Anolik_042318_cellRanger_only_filtered/', full.names = TRUE, recursive = TRUE, pattern = 'genes.tsv') %>% str_split('/+', simplify = TRUE)
+pipestance_all = list.files('data/deliv_Anolik_042318_cellRanger_only_filtered/', full.names = TRUE, recursive = TRUE, pattern = 'genes.tsv') %>% str_split('/+', simplify = TRUE)
 
-bases = pipestance_all[,2]
-pipestance = apply(pipestance_all[,-6], 1, function(x) do.call(file.path, as.list(x)))
+bases = pipestance_all[,3]
+pipestance = apply(pipestance_all[,-7], 1, function(x) do.call(file.path, as.list(x)))
 
 samp_map = data_frame(anno_file = pipestance, sample = str_match(bases, 'Sample_(RA[0-9]+)')[,2], pop = str_match(bases, '(Syn|SYN|BLD)')[,1] %>% toupper(), fileset = seq_along(pipestance), dataset = paste(sample, pop, sep = "_"))
 names(pipestance) = samp_map$dataset
@@ -63,7 +57,7 @@ barcodes = read_csv('refined/nida_livecells_barcodes.csv', skip = 5) %>% mutate(
 ## Mapping statistics
 
 ```{r mappingstat}
-stats = list.files('deliv_Anolik_042318_cellRanger_only_filtered/', pattern = 'metrics_summary.csv', full.names = TRUE, recursive = TRUE) 
+stats = list.files('data/deliv_Anolik_042318_cellRanger_only_filtered/', pattern = 'metrics_summary.csv', full.names = TRUE, recursive = TRUE) 
 stats = data_frame(file = stats) %>% rowwise() %>% mutate(stats = list(read_csv(file)))%>% unnest(stats) %>% select(run = file, 'Percent Mapping to Genome' = `Reads Mapped Confidently to Genome`, 'Percent Mapping to Transcriptome' = `Reads Mapped Confidently to Transcriptome`)
 
 write_csv(stats, path = 'refined/10x_statistics.csv')
@@ -678,6 +672,7 @@ cluster_counts = md %>% group_by(dataset, cluster) %>% summarize(n()) %>% tidyr:
 # Clusterprofiler
 
 ```{r}
+library(org.Hs.eg.db)
 library(clusterProfiler)
 ## install_github('clusterProfiler.dplyr')
 
@@ -914,10 +909,10 @@ ggplot(cdr_cluster2, aes(x = cdr3, fill = dataset)) + geom_bar() + coord_flip() 
 ```{r}
 ig_coexp = cbind(cdr_seurat,  t(assay(sce)[c('IGHD', 'IGHM', 'IGHG3'),]) %>% as.matrix()) 
 
-ig_plot = ggplot(ig_coexp, aes(x = IGHD, y = AMmisc::clamp(IGHM, 100))) + geom_jitter(aes(color = class_heavy), width = .02, height = .02) + scale_x_continuous(trans = scales::log1p_trans()) + scale_y_continuous(trans = scales::log1p_trans()) + facet_wrap(~label, scales = 'free') + geom_smooth(method = 'lm')
+ig_plot = ggplot(ig_coexp, aes(x = IGHD, y = clamp(IGHM, 100))) + geom_jitter(aes(color = class_heavy), width = .02, height = .02) + scale_x_continuous(trans = scales::log1p_trans()) + scale_y_continuous(trans = scales::log1p_trans()) + facet_wrap(~label, scales = 'free') + geom_smooth(method = 'lm')
 
 ig_plot + ylab('IGHM')
-ig_plot + aes(x = AMmisc::clamp(IGHG3, 100)) + ylab('IGHG3')
+ig_plot + aes(x = clamp(IGHG3, 100)) + ylab('IGHG3')
 
 ```
 

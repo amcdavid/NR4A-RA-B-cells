@@ -20,7 +20,7 @@ library(broom)
 library(tidyverse)
 library(GGally)
 library(ggbeeswarm)
-clamp = function(x) {
+clamp = function(x, modulus = 5) {
     x[x < -modulus] = -modulus
     x[x > modulus] = modulus
     x
@@ -94,7 +94,7 @@ ggplot(join, aes(x = shm_rate_heavy, y = shm_rate_light)) + geom_point(aes(color
 ```{r}
 MIN_READS = 30
 
-filter(all_anno, is_cell == 'True') %>% mutate(reads = AMmisc::clamp(reads, 2000), umis = AMmisc::clamp(umis, 32)) %>% mutate(umi_cat = cut(umis, breaks = c(0, 1, 2, 4, 8, 16, 32)), type = case_when( (celltype == 'B') & productive == 'True' ~ 'productive B' , celltype == 'B' ~ 'unproductive B',  TRUE ~ 'other')) %>% ggplot(aes(x = reads, y = umi_cat)) + geom_quasirandom(size = 1, alpha = .5, groupOnX = FALSE) + facet_wrap(~type) + scale_x_log10() + geom_vline(xintercept = MIN_READS, lty = 2)
+filter(all_anno, is_cell == 'True') %>% mutate(reads = clamp(reads, 2000), umis = clamp(umis, 32)) %>% mutate(umi_cat = cut(umis, breaks = c(0, 1, 2, 4, 8, 16, 32)), type = case_when( (celltype == 'B') & productive == 'True' ~ 'productive B' , celltype == 'B' ~ 'unproductive B',  TRUE ~ 'other')) %>% ggplot(aes(x = reads, y = umi_cat)) + geom_quasirandom(size = 1, alpha = .5, groupOnX = FALSE) + facet_wrap(~type) + scale_x_log10() + geom_vline(xintercept = MIN_READS, lty = 2)
 
 
 
@@ -150,7 +150,7 @@ knitr::kable(total_cells)
 ```{r}
 good_anno = semi_join(all_anno, good_bc %>% select(sample, pop, barcode)) %>% filter( high_confidence == 'True', celltype == 'B', reads > MIN_READS)
 
-good_anno %>% mutate(reads = AMmisc::clamp(reads, 2000), umis = AMmisc::clamp(umis, 20)) %>% mutate(umi_cat = cut(umis, 4)) %>% ggplot(aes(y = reads, x = umi_cat)) + geom_quasirandom(size = 1, alpha = .5, groupOnX = TRUE) + facet_wrap(~celltype + productive) + scale_y_log10() + geom_hline(yintercept = MIN_READS, lty = 2)
+good_anno %>% mutate(reads = clamp(reads, 2000), umis = clamp(umis, 20)) %>% mutate(umi_cat = cut(umis, 4)) %>% ggplot(aes(y = reads, x = umi_cat)) + geom_quasirandom(size = 1, alpha = .5, groupOnX = TRUE) + facet_wrap(~celltype + productive) + scale_y_log10() + geom_hline(yintercept = MIN_READS, lty = 2)
 
 n_productive = good_anno  %>% group_by(sample, pop, barcode) %>% summarize(n_productive = n())
 
