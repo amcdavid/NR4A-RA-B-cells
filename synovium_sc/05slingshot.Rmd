@@ -56,24 +56,6 @@ summary(sizeFactors(sce))
 sum(sizeFactors(sce)<0)
 ```
 
-# Tbet groups (old analysis)
-```{r setupTests}
-
-colData(sce) = cbind(colData(sce), assay(sce)[!is.na(rowData(sce)$group),] %>% as.matrix %>% t)
-tbx = factor(colData(sce)$TBX21>0, labels = c('TBX21-', 'TBX21+'))
-itgax = factor(colData(sce)$ITGAX>0, labels = c('ITGAX-', 'ITGAX+'))
-colData(sce)$grp = interaction(tbx, itgax)
-
-props = colData(sce) %>% as.data.frame() %>% group_by(dataset, res.0.5, grp) %>% summarize(count = n())
-
-props = props %>% summarize(total = sum(count)) %>% left_join(props) %>% mutate(prop = count/total)
-
-
-plt = ggplot(props, aes(x = dataset, fill = grp))+geom_col(aes(y = prop)) + theme_minimal()+  scale_fill_brewer(type = 'qual', palette = 'Set1') + coord_flip()+ facet_wrap(~res.0.5)
-plt
-
-```
-
 
 ```{r normalize_sf}
 qc = qc[sizeFactors(sce)>0]
@@ -85,41 +67,6 @@ plt + aes(y = Matrix::colSums(assay(sce, 'counts') > 0)) + ylab('CDR')
 
 ```
 
-# Cloupe
-
-```{r}
-cloupein = read_csv('refined/Cloupe-barcodes.csv')
-aggr_in = read_csv('refined/aggregation.csv') %>% mutate(suffix = seq_len(nrow(.)))
-sce_remap = colData(sce) %>% as.data.frame %>% mutate(library_id = dataset)
-source('Interface-Loupe.R')
-sce_cloupe = remap_cloupe(cloupin, aggr_in, sce_remap)
-
-```
-
-```{r eval = TRUE}
-cloupeout1 = left_join(cloupein, sce_cloupe) %>% select(Barcode, res.0.5)
-write_csv(cloupeout1, 'refined/filtered_clustered_only_clusterid.csv')
-
-cloupeout2 = right_join(cloupein, sce_cloupe) %>% select(Barcode, tSNE_1, tSNE_2)
-write_csv(cloupeout2, 'refined/filtered_clustered_only_tsne.csv')
-```
-
-### Write BCR info
-
-```{r, eval = TRUE}
-get_barcode = . %>% mutate(Barcode_prefix = str_replace(barcode, '-1', '')) %>%
-    right_join(sce_cloupe %>% select(Barcode, dataset, Barcode_prefix), by = c('Barcode_prefix', 'dataset'))
-
-cloupeout3 = left_join(cloupein, sce_cloupe) %>% select(Barcode, chain_type)
-write_csv(cloupeout3, 'refined/filtered_clustered_bcr_chaintype.csv')
-
-cloupeout4 = sce_cloupe %>% mutate_at(vars(class_heavy, class_light), fct_explicit_na) %>% mutate(paired_class = str_c(class_heavy, "-", class_light)) %>%
-  right_join(cloupein) %>% select(Barcode, paired_class)
-write_csv(cloupeout4, 'refined/filtered_cluster_bcr_class.csv')
-
-cloupeout5 = left_join(cloupein, sce_cloupe) %>% select(Barcode, shm_rate)
-write_csv(cloupeout5, 'refined/filtered_cluster_shm.csv')
-```
 
 
 ## Subset clusters
@@ -151,7 +98,6 @@ ggplot(dplyr::filter(trendvar_tidy, use), aes(x = sqrt(mean), y = total))+geom_p
 rowData(sce_cd20)$hvg = dec$rank<1000 | !is.na(rowData(sce_cd20)$curated)
 ```
 
-
 # PCA
 
 ## Selected Seurat clusters
@@ -164,12 +110,7 @@ pca_obj = prcomp(t(logcounts(sce_cd20[rowData(sce_cd20)$hvg,])), rank = 10, cent
 px = predict(pca_obj, t(logcounts(sce[rowData(sce_cd20)$hvg,])))
 reducedDims(sce) = SimpleList(PCA = px)
 
-sce_cd20 = runDiffusionMap(sce_cd20, ncomponents = 2, ntop = Inf, scale_features = TRUE, feature_set = rowData(sce_cd20)$hvg)
-
-
-
-#plotPCA(sce_cd20, ncomponents = min(PCA_COMPONENTS, 4), colour_by = 'dataset')
-#plotPCA(sce_cd20, ncomponents = min(PCA_COMPONENTS, 4), colour_by = 'total_features')
+#sce_cd20 = runDiffusionMap(sce_cd20, ncomponents = 2, ntop = Inf, scale_features = TRUE, feature_set = rowData(sce_cd20)$hvg)
 
 thresh_x = -3
 thresh_y = 0
@@ -193,15 +134,6 @@ plotPCA(sce_cd20[,!is.na(sce_cd20$shm_rate)], ncomponents = 2, colour_by = 'shm_
 
 SHM, and SHM in cells with a recovered BCR
 
-## Diffusion maps, selected Seurat clusters
-
-```{r}
-plotDiffusionMap(sce_cd20, colour_by = 'ident')
-plotDiffusionMap(sce_cd20, colour_by = 'grp')
-
-```
-
-Diffusion maps, selected groups
 
 
 ```{r}
@@ -256,10 +188,6 @@ lines(SlingshotDataSet(sce_cd20), lwd=2)
 pairs(cbind(sce_cd20$slingPseudotime_1, reducedDim(sce_cd20, type = use)[,1:2]), col = sce_cd20$grp)
 ```
 
-```{r, eval = FALSE}
-pt_regression = glm(sce_cd20$grp != 'TBX21-.ITGAX-' ~ sce_cd20$slingPseudotime_1, family = 'binomial')
-dr_regression = glm(sce_cd20$grp != 'TBX21-.ITGAX-' ~ reducedDim(sce_cd20, use)[,1], family = 'binomial')
-```
 
 ## PC1 heatmaps
 

@@ -310,6 +310,14 @@ get_markers_and_heatmap = function(ssce_){
                                 min.pct = 0.1, only.pos = FALSE, do.print = F,
                                 return.thresh = 1, test.use = 't')
 top10 = s_mark %>% group_by(cluster) %>% top_n(10, avg_logFC)
+
+gene_extra =  tribble(~cluster, ~gene,
+                     'NR4A+', 'NR4A1',
+                      'NR4A+', 'NR4A2',
+                      'NR4A+', 'NR4A3',
+                     'NR4A+', 'GPR183') %>% semi_join(s_mark, .)
+
+top10 = bind_rows(top10, gene_extra) %>% unique() %>% arrange(cluster, avg_logFC)
 #top10 = s_mark %>% group_by(cluster) %>% top_n(10, p_val_adj)
 
 # setting slim.col.label to TRUE will print just the cluster IDS instead of
