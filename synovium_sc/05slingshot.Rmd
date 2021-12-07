@@ -228,15 +228,23 @@ sce_cd20_curated = reorder_sce(sce_cd20plus, dplyr::filter(loading, !is.na(curat
 # SCE  %>% assay('logcounts') %>% as.matrix %>% Heatmap(cluster_columns = FALSE, clustering_distance_rows = 'pearson', top_annotation = HeatmapAnnotation(colData(SCE)[, c('dataset', 'ident')] %>% setNames(nm = c('dataset', 'Cluster')) , col = list(Cluster = scater_col_vec)), name = 'Normalized Expression')
 # }
 
-heatmapf = function(SCE, extra){
-SCE  %>% assay('logcounts') %>% as.matrix %>% Heatmap( name = 'Normalized Expression', cluster_columns = FALSE, clustering_distance_rows = 'pearson', top_annotation = HeatmapAnnotation(colData(SCE)[, c('ident', extra), drop = FALSE] %>% setNames(nm = c('Cluster', extra)) , col = list(Cluster = scater_col_vec)))
+heatmapf = function(SCE, extra = NULL, barplot_values){
+  
+  if(missing(barplot_values)){
+    top_anno = HeatmapAnnotation(colData(SCE)[, c('ident', extra), drop = FALSE] %>% setNames(nm = c('Cluster', extra)), col = list(Cluster = scater_col_vec))
+  } else{
+    top_anno = HeatmapAnnotation(colData(SCE)[, c('ident', extra), drop = FALSE] %>% setNames(nm = c('Cluster', extra)), col = list(Cluster = scater_col_vec), barplot = anno_barplot(colData(SCE)[[barplot_values]]))
+  }
+  
+SCE  %>% assay('logcounts') %>% as.matrix %>% Heatmap( name = 'Normalized Expression', cluster_columns = FALSE, cluster_rows = FALSE, top_annotation = top_anno)
 }
 
 ```
 
-```{r pc1_hm}
-sce_cd20_pc1 %>% heatmapf(extra = 'PC1')
-sce_cd20_pc1[,sce_cd20_pc1$PC2 < thresh_y & sce_cd20_pc1$ident %in% c('Naive(i)', 'Naive(ii)', 'NR4A+', 'Naive(iii)')] %>% heatmapf(extra = 'PC1')
+```{r pc1_hm, fig.height = 10}
+sce_cd20_pc1 %>% heatmapf(barplot_values = 'PC1')
+sce_cd20_pc1[,sce_cd20_pc1$PC2 < thresh_y & sce_cd20_pc1$ident %in% c('Naive(i)', 'Naive(ii)', 'NR4A+', 'Naive(iii)')] %>% heatmapf(barplot_values = 'PC1')
+
 ```
 
 Top loading genes and PC1
@@ -251,9 +259,9 @@ Correlation between shm and PC1
 
 ## PC2 heatmaps
 
-```{r pc2_hm}
-sce_cd20_pc2 %>% heatmapf(extra = 'PC2')
-sce_cd20_pc2[,sce_cd20_pc2$PC1 > thresh_x & sce_cd20_pc2$ident %in% c('NR4A+', 'LMNA+', 'Memory', 'Naive(iii)')] %>% heatmapf(extra = 'PC2')
+```{r pc2_hm, fig.height = 10}
+sce_cd20_pc2 %>% heatmapf(barplot_values = 'PC2')
+sce_cd20_pc2[,sce_cd20_pc2$PC1 > thresh_x & sce_cd20_pc2$ident %in% c('NR4A+', 'LMNA+', 'Memory', 'Naive(iii)')] %>% heatmapf(barplot_values = 'PC2')
 ```
 
 Top loading genes and PC2
@@ -274,98 +282,10 @@ Correlation between SHM and PC2
 sce_cd20_curated %>% heatmapf(extra = 'PC1')
 ```
 
-# Seurat PCs
-
-```{r, eval = FALSE}
-library(Seurat)
-foo = assays(sce_cd20) %>% lapply(as.matrix)
-colnames(foo$counts) = paste(colData(sce_cd20)$dataset, colData(sce_cd20)$barcode, sep = '_')
-#ssce = sce
-#assays(ssce) = foo
-#ssce = Seurat::Convert(ssce, to = 'seurat')
-meta = colData(sce_cd20) %>% as.data.frame
-rownames(meta) = colnames(foo$counts)
-ssce = Seurat::CreateSeuratObject(raw.data = foo$counts, meta.data = meta)
-ssce = Seurat::NormalizeData(ssce)
-ssce@var.genes = rowData(sce_cd20) %>% as.data.frame %>% dplyr::filter(hvg) %>% pull(symbol)
-
-```
-
-```{r seurat_pca,  eval = FALSE}
-PCA_COMPONENTS = 6
-MAX_PCA = ceiling(2*PCA_COMPONENTS)
-
-ssce = Seurat::ScaleData(ssce, display.progress = FALSE)
-ssce = Seurat::RunPCA(ssce, pcs.print = 0, pcs.compute = MAX_PCA)
-Seurat::PCElbowPlot(ssce, num.pc = MAX_PCA)
-
-#ssce =  Seurat::JackStraw(object = ssce, display.progress = TRUE, num.replicate = 100, do.par = TRUE, num.cores = 3, maxit = 500, num.pc = MAX_PCA)
-#Seurat::JackStrawPlot(ssce, PCs = 1:PCA_COMPONENTS)
-Seurat::DimPlot(ssce, group.by = 'sample')
-Seurat::DimPlot(ssce, group.by = 'pop')
-Seurat::DimPlot(ssce, group.by = 'grp')
-
-
-
-Seurat::PCHeatmap(ssce, pc.use = c(1:2), use.scale = FALSE)
-Seurat::VizPCA(object = ssce, pcs.use = c(1:2))
-```
 
 ```{r}
 pc_table = cbind(colData(sce)[, c('sample', 'pop', 'Barcode')], reducedDims(sce)$PCA) %>%
   as.data.frame()
 write_csv(pc_table, path = '05slingshot_files/principal_comp.csv')
-```
-
-# Tbet analysis (old)
-
-
-```{r, results = 'asis'}
-knitr::kable(table(dataset = colData(sce_cd20)$dataset, colData(sce_cd20)$grp) )
-```
-
-```{r runTests, eval = FALSE}
-library(MAST)
-options(mc.cores = 4)
-sca = as(sce_cd20, 'SingleCellAssay')
-rowData(sca)$primerid = rowData(sca)$Symbol
-assays(sca) = list(logCounts = assay(sca, 'logcounts'))
-zz_umi = zlm(~I(ITGAX>0)*I(TBX21>0) + total_features, sca = sca, method = 'bayesglm', parallel = TRUE)
-
-zz = zlm(~I(ITGAX>0)*I(TBX21>0), sca = sca, method = 'bayesglm', parallel = TRUE)
-
-dt = summary(zz_umi, doLRT = c('I(ITGAX > 0)TRUE:I(TBX21 > 0)TRUE', 'I(ITGAX > 0)TRUE', 'I(TBX21 > 0)TRUE'))$datatable %>% as_tibble()
-
-```
-
-
-```{r showTests, eval = FALSE}
-contrasts = dt %>% dplyr::filter(str_detect(contrast, 'ITGAX|TBX'), component == 'H') %>% mutate(fdr = p.adjust(`Pr(>Chisq)`, method = 'fdr'))
-
-sig = dplyr::filter(contrasts, fdr < .1, primerid != 'TBX21', primerid != 'ITGAX')
-
-
-with_hurdle = dt %>% dplyr::filter(component == 'D') %>% right_join( (contrasts %>% semi_join(sig %>% select(primerid))) %>% select(primerid, contrast, fdr))
-
-with_hurdle = with_hurdle %>% group_by(contrast) %>% mutate(primerid_rank = rank(fdr))
-
-ggplot(with_hurdle, aes(x = coef, y = -log10(fdr), label = ifelse(primerid_rank < 30, primerid, '')))+ geom_point(size = 1) + theme_minimal() + facet_wrap(~contrast) + geom_text_repel(size = 2, segment.alpha = .25) + scale_colour_brewer(type = 'qual', palette = 2) + xlab('logFC(Group:Baseline)')
-
-```
-
-```{r, eval = FALSE}
-sig %>% group_by(contrast) %>% summarize(n())
-```
-
-
-# CD20 tests
-```{r, eval = FALSE}
-colData(sca)$MS4A1 = assay(sca)['MS4A1',]
-
-zz_msa = zlm(~MS4A1 + total_features, sca = sca[!is.na(rowData(sca)$group),], method = 'bayesglm', parallel = TRUE)
-dt_msa = summary(zz_msa, doLRT = c('MS4A1'))$datatable %>% as_tibble()
-
-ggplot(dplyr::filter(dt_msa, component == 'H', contrast == 'MS4A1'), aes(y = fct_reorder(primerid, `Pr(>Chisq)`), x = AMmisc::clamp(-log10(`Pr(>Chisq)`), 20))) + geom_point() + ylab('Gene') + xlab('-log10(P value)') + ggtitle('Correlates of CD20')
-
 ```
 
