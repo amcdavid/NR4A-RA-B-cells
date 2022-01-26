@@ -297,34 +297,46 @@ Compare 28 NRA41+ cells in SLE to 835 cells in RA.
 Maybe also compare the gap between first and second or first and third (since second is likely LMNA+) best cluster?
 
 ```{r}
-sample_tab = table(sample = all_pred$sample, 'NR4A+' = all_pred$pruned.labels== 'NR4A+')
+subpop_mixedmodel = function(population) {
+  sample_tab = table(sample = all_pred$sample, 'subpop' = all_pred$pruned.labels== population)
+  
+  knitr::kable(sample_tab)
+  
+  sample_tab = sample_tab[rowSums(sample_tab) >= 5,]
+  
+  sample_tib = as_tibble(unclass(sample_tab), rownames = 'sample') %>% left_join(sample_exp_tab)
+  
+  subpop_lme = lme4::glmer(cbind(`TRUE`, `FALSE`) ~ experiment + (1|sample), family = 'binomial', data = sample_tib)
+  exp_tab = data.frame(experiment = unique(sample_tib$experiment, sample = NA))
+  
+  bs = lme4::bootMer(subpop_lme, nsim = 100, re.form = NA, FUN = function(m) predict(m, newdata =exp_tab , re.form = NA, type = 'response'))
+  
+  subpop_fitted = cbind(estimate = bs$t0, exp_tab, confint(bs)) %>% right_join(unique(sample_exp_tab[c('experiment', 'Experiment')]))
+  
+  
+  subpop_tab = as.data.frame(prop.table(sample_tab, margin = 1)) %>% left_join(sample_exp_tab) %>% filter(subpop == TRUE)
+  
+  plt = ggplot(subpop_tab, aes(x = Experiment, y = Freq)) + ggbeeswarm::geom_beeswarm() + geom_crossbar(data = subpop_fitted, aes(y = estimate, ymin = `2.5 %`, ymax = `97.5 %`), color = 'blue', width = .1) + theme_minimal() + ylab(sprintf("%s Frequency", population))
+  print(plt)
+  invisible(list(lme = subpop_lme, ggplot = plt, sample_tib = sample_tib))
+}
 
-knitr::kable(sample_tab)
 ```
 
-We'll keep subjects with >=5 cells.
-
-```{r nr4_freq}
-sample_tab = sample_tab[rowSums(sample_tab) >= 5,]
-
-sample_tib = as_tibble(unclass(sample_tab), rownames = 'sample') %>% left_join(sample_exp_tab)
-
-nr4_lme = lme4::glmer(cbind(`TRUE`, `FALSE`) ~ experiment + (1|sample), family = 'binomial', data = sample_tib)
-exp_tab = data.frame(experiment = unique(sample_tib$experiment, sample = NA))
-
-bs = lme4::bootMer(nr4_lme, nsim = 100, re.form = NA, FUN = function(m) predict(m, newdata =exp_tab , re.form = NA, type = 'response'))
-
-nr4_fitted = cbind(estimate = bs$t0, exp_tab, confint(bs)) %>% right_join(unique(sample_exp_tab[c('experiment', 'Experiment')]))
-
-
-nr4_tab = as.data.frame(prop.table(sample_tab, margin = 1)) %>% left_join(sample_exp_tab) %>% filter(NR4A. == TRUE)
-
-ggplot(nr4_tab, aes(x = Experiment, y = Freq)) + ggbeeswarm::geom_beeswarm() + geom_crossbar(data = nr4_fitted, aes(y = estimate, ymin = `2.5 %`, ymax = `97.5 %`), color = 'blue', width = .1) + theme_minimal() + ylab("NR4A+ Frequency")
+```{r nr4a_mm}
+nr4_lme = subpop_mixedmodel("NR4A+")
+nr4a_tib = nr4_lme$sample_tib
+summary(nr4_lme$lme)
 ```
 
-```{r}
-summary(nr4_lme)
+
+### LMNA frequencies
+
+```{r lmna_mm}
+lmna_lme = subpop_mixedmodel("LMNA+")
+summary(lmna_lme$lme)
 ```
+
 
 # Correlate AMP-1 with singleR labels
 
@@ -338,7 +350,7 @@ cluster_freq = cluster_id %>% group_by(cell_type) %>% do({
   as.data.frame(tab)
 }) %>% group_by(cell_type, sample) %>% mutate(total = sum(Freq), percent = Freq/total*100)
 
-phase1_join = inner_join(sample_tib, cluster_freq) 
+phase1_join = inner_join(nr4a_tib, cluster_freq) 
 
 
 ```
