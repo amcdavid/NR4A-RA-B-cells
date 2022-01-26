@@ -142,13 +142,6 @@ plotColData(all_res, x = "log10_total_counts_mito", y = "log10_total_features", 
 ```
 
 ```{r}
-gg = glm(seqgek_qc_ok ~ log10_total_counts_mito + log10_total_features, data = colData(all_res), family = 'binomial')
-all_res$logistic_qc_ok = predict(gg)>0
-
-plotColData(all_res, x = "log10_total_counts_mito", y = "log10_total_features", colour_by = 'logistic_qc_ok', alpha = .5)
-```
-
-```{r}
 
 sce = all_res[,all_res$seqgek_qc_ok]
 sce = sce[Matrix::rowMeans(assay(sce) > 0) > MIN_EXP_FREQ,]
@@ -190,28 +183,26 @@ sce = normalise(sce)
 ```
 
 
-
-
 # Highly variable genes
 
 ```{r}
-blacklist = rep(FALSE, nrow(sce))
+blocklist = rep(FALSE, nrow(sce))
 ```
 
 ```{r trendvar}
-fit.g = scran::trendVar(sce, subset.row = !blacklist, use.spikes = FALSE, parametric = TRUE)
+fit.g = scran::trendVar(sce, subset.row = !blocklist, use.spikes = FALSE, parametric = TRUE)
 dec = scran::decomposeVar(sce, fit.g) %>% as.data.frame() %>% mutate(rank = rank(-bio/total))
 ggplot(dec, aes(x = rank, y = p.value)) + geom_point()
 rowData(sce) = cbind(dec, rowData(sce))
 
-trendvar_tidy = rowData(sce) %>% as.data.frame %>% mutate(use = !blacklist, trend = fit.g$trend(mean), cut_mean = cut(sqrt(mean), 5)) %>% group_by(cut_mean, use) %>% mutate(rank_by_mean = rank(-bio/total))
+trendvar_tidy = rowData(sce) %>% as.data.frame %>% mutate(use = !blocklist, trend = fit.g$trend(mean), cut_mean = cut(sqrt(mean), 5)) %>% group_by(cut_mean, use) %>% mutate(rank_by_mean = rank(-bio/total))
 
 ggplot(dplyr::filter(trendvar_tidy, use), aes(x = sqrt(mean), y = total))+geom_point() + geom_line(aes(y = trend), color = 'red') + geom_text_repel(aes(label = ifelse(rank_by_mean<20 & FDR < .1, symbol, '')), size = 2) + theme_minimal()
 ```
 
 
 ```{r trendvar_notig}
-blacklist = str_detect(rowData(sce)$symbol, 'IG[HKL]V[0-9]+')
+blocklist = str_detect(rowData(sce)$symbol, 'IG[HKL]V[0-9]+')
 <<trendvar>>
 ```
 
@@ -270,7 +261,6 @@ Seurat::VizPCA(object = ssce, pcs.use = c(1:5, MAX_PCA), nCol = 3)
 ```{r seurat_cluster}
 ssce = Seurat::FindClusters(ssce, dims.use = 1:PCA_COMPONENTS, print.output = FALSE, plot.SNN = TRUE, resolution = .5)
 ssce = Seurat::RunTSNE(ssce, dims.use = 1:PCA_COMPONENTS)
-
 ```
 
 
@@ -952,6 +942,8 @@ stopifnot(all(seurat_cdata$total_counts == Matrix::colSums(seurat_exprs)))
 write_csv(seurat_cdata, 'refined/filtered_clustered_cdata.csv')
 write_csv(seurat_fdata %>% as.data.frame, 'refined/filtered_clustered_fdata.csv')
 saveRDS(seurat_exprs, 'refined/filtered_clustered_exprs.rds')
+saveRDS(ssce_whole, "refined/bcells_seurat_v2_3_4.rds")
+
 
 write_csv(s_mark, 'refined/cluster_markers.csv')
 ```

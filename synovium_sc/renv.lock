@@ -484,6 +484,13 @@
       "Repository": "CRAN",
       "Hash": "2515a4fd96cad519227e284eb784ee92"
     },
+    "alakazam": {
+      "Package": "alakazam",
+      "Version": "0.2.11",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "64c49e5226281416b08f9ddf56783862"
+    },
     "ape": {
       "Package": "ape",
       "Version": "5.1",
@@ -1778,6 +1785,13 @@
       "Source": "Repository",
       "Repository": "CRAN",
       "Hash": "5ed4ef04d145af4c2bf651d94ba3d7fe"
+    },
+    "seqinr": {
+      "Package": "seqinr",
+      "Version": "4.2-8",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "487529ff4c174fb9a83d6ffce74f9d62"
     },
     "shape": {
       "Package": "shape",
