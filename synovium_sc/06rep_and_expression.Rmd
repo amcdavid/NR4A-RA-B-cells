@@ -3,13 +3,11 @@ title: "Clustering BCR"
 author: "Andrew McDavid"
 date: '`r Sys.Date()`'
 output:
-  slidy_presentation:
-    font_adjustment: +1
   html_document:
     code_folding: hide
     toc: yes
     toc_float: yes
-extensions: inline_footnotes
+    extensions: inline_footnotes
 ---
 
 # Load libraries
@@ -21,7 +19,6 @@ knitr::opts_chunk$set(dev = c('png', 'pdf'), fig.width = 6, fig.height = 4)
 library(broom)
 library(tidyverse)
 library(ggbeeswarm)
-library(AMmisc) # devtools::install_github('amcdavid/AMmisc')
 
 #library(ShortRead)
 library(ggdendro)
@@ -72,10 +69,10 @@ table(ccdb0$contig_tbl$any_nonproductive, ccdb0$contig_tbl$chain, exclude= NULL)
 
 ```{r}
 scrna_cdata = read_csv('refined/filtered_clustered_cdata.csv', guess_max = 1e4) 
-template = scrna_cdata %>% select(dataset, barcode, sample, pop, seqgek_qc_ok, ident, tSNE_1, tSNE_2) %>% mutate()
+template = scrna_cdata %>% select(dataset, barcode, sample, pop, seqgek_qc_ok, ident, tSNE_1, tSNE_2, contains('NR4A'))
 ccdb = ccdb_join(template, ccdb0, join_fun = dplyr::full_join)
 ccdb$cell_tbl = ccdb$cell_tbl %>% mutate(ident = fct_explicit_na(ident, na_level = "No5'"), ident_collapse= str_extract(ident, "^[A-Z4a-z+5']+"))
-ccdb$contig_tbl = left_join(ccdb$contig_tbl, ccdb$cell_tbl[c(ccdb$cell_pk, 'seqgek_qc_ok', 'ident','ident_collapse', 'tSNE_1', 'tSNE_2')], by = ccdb$cell_pk)
+ccdb$contig_tbl = left_join(ccdb$contig_tbl, ccdb$cell_tbl[c(ccdb$cell_pk, 'seqgek_qc_ok', 'ident','ident_collapse', 'tSNE_1', 'tSNE_2', 'NR4A_counts', 'any_NR4A')], by = ccdb$cell_pk)
 
 #ccdb = canonicalize_cell(ccdb, contig_fields = c('ident', 'tSNE_1', 'tSNE_2', 'seqgek_qc_ok', 'productive'))
 
@@ -282,6 +279,46 @@ test = cluster_permute_test(by_chain_ccdb$`TRUE`, 'ident_collapse', 'dna97', sta
 test
 ```
 
+```{r}
+cluster_count = function(cluster_idx, group){
+   cluster_idx = .as.vector.tibble(cluster_idx)
+    group = .as.vector.tibble(group)
+    #n_label_cluster = dplyr::tibble(cluster_idx = cluster_idx, group = group)
+    tab = table(cluster_idx, group)
+    # only count non-zero clones
+    tab[tab==0] = NA
+    avg_clonality = colMeans(tab, na.rm = TRUE)
+    avg_clonality['NR4A-']-avg_clonality['NR4A+']
+}
+
+plasma_counts = by_chain_ccdb$`TRUE` %>% filter_cdb(ident_collapse == 'Plasma', tbl = 'cell_tbl') %>% equalize_ccdb()
+nr4a_test = plasma_counts %>% cluster_permute_test('any_NR4A', 'dna97', statistic = cluster_count, n_perm = 1000)
+```
+
+
+```{r}
+nr4a_test
+```
+
+
+```{r clonal_freq_plot}
+clonal_freq_cell = plasma_counts$cell_tbl %>% 
+  group_by(dna97, any_NR4A) %>% 
+  mutate(count = n()) %>%
+  group_by(any_NR4A) %>%
+  mutate(inv_freq = count/n())
+
+ggplot(clonal_freq_cell, aes(color = any_NR4A, x = inv_freq)) + 
+  geom_freqpoly(bins = 6, aes(y = ..density..)) + 
+  xlim(c(0, .35)) + 
+  theme_minimal() +
+  scale_color_discrete('NR4A expression') +
+  labs(x = 'Clonal frequency of cell') +
+  theme(legend.pos = 'bottom')
+
+```
+
+
 # TSNE, again?
 
 ```{r bcr_tsne_redux}
@@ -342,53 +379,4 @@ summary(lme4::lmer(umis ~ ident + (1|dataset), data = filter(by_chain4, ig_heavy
 ```
 
 Heavy chain UMIs in plasma clusters.  About `r round(exp())
-
-# Obsolete
-
-```{r datatable}
-MIN_OLIGO = 6
-
-oligo_clusters = filter(ccdb$cluster_tbl, n_cluster > MIN_OLIGO)
-oligo_contigs = ccdb
-oligo_contigs$contig_tbl = semi_join(oligo_contigs$contig_tbl, oligo_clusters, by = 'dna97')
-
-oligo_clusters = oligo_contigs$contig_tbl %>% group_by(dna97) %>% summarize(`n subjects observed` = length(unique(sample))) %>% left_join(oligo_clusters)
-
-oligo_clusters %>% select(dna97:cdr3, chain:j_gene, n_cluster:avg_distance) %>% DT::datatable()
-
-```
-Checking to see how many CDR3 sequences are present in expanded clonotypes. Expect only 1.
-
-There are `r nrow(oligo_contigs$cell_tbl)` cells that appear in cdr3 families that occur more than `r MIN_OLIGO` times.
-
-***
-
-```{r}
-oligo_plot = ggplot(oligo_contigs$contig_tbl, aes(x = representative, fill = class)) + geom_bar() + coord_flip() + scale_fill_brewer(type = 'qual') + theme_minimal() + scale_y_log10()
-oligo_plot 
-```
-
-```{r}
-oligo_plot + aes(fill =   sample) + facet_wrap(~pop)
-
-```
-
-
-
-# Chains present
-
-```{r}
-oligo_pair_types = left_join(oligo_contigs$cell_tbl, oligo_contigs$contig_tbl, by = c("barcode", "dataset", 'sample', 'pop'))
-ggplot(oligo_pair_types, aes(x = representative, fill = canonical)) + geom_bar() + coord_flip() + theme_minimal() + facet_wrap(~pairing, scales = 'free_x')
-
-```
-
-```{r}
-segment_plot = ggplot(oligo_pair_types, aes(y = representative, x = v_gene, color = dataset)) + geom_jitter() + theme(axis.text.x = element_text(angle = 90))
-segment_plot 
-segment_plot + aes(x = j_gene)
-```
-
-
-
 

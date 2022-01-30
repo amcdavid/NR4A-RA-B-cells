@@ -3,13 +3,14 @@ title: "RA Synovial/Blood 5' expression"
 author: "Andrew McDavid"
 date: '`r Sys.Date()`'
 output:
+  github_document: default
+  slidy_presentation:
+    font_adjustment: +1
+    extensions: inline_footnotes
   html_document:
     code_folding: hide
     toc: yes
     toc_float: yes
-  slidy_presentation:
-    font_adjustment: +1
-    extensions: inline_footnotes
 ---
 
 # Libraries
@@ -288,6 +289,8 @@ Seurat::TSNEPlot(ssce, do.label = TRUE, pt.size = 0.5, group.by = 'large_cluster
 
 ```{r}
 ssce@meta.data$ident = Seurat::GetIdent(ssce, uniq = FALSE)
+ssce@meta.data$NR4A_counts = Matrix::colSums(ssce@data[c('NR4A1', 'NR4A2', 'NR4A3'),])
+ssce@meta.data$any_NR4A = factor(ssce@meta.data$NR4A_counts > 0, labels = c('NR4A-', 'NR4A+'))
 ssce_whole = ssce
 ssce = Seurat::SubsetData(ssce, ident.use = names(levs))
 ```
@@ -450,11 +453,14 @@ lmna_markers = get_markers_and_heatmap(lmna)
 
 ```{r split_nr4a}
 
-split_and_cluster = function(ssce_, id, orig_markers, extra = character(), resolution_=0.5, top_n = 10){
+split_and_cluster = function(ssce_, id, orig_markers, extra = character(), resolution_=0.5, other_split_factor = NULL, top_n = 10){
   which_cells = Seurat::WhichCells(ssce_, ident = id)
   ssce_id = Seurat::SubsetData(ssce_, ident.use = id)
-  ssce_id = Seurat::FindClusters(ssce_id, dims.use = 1:PCA_COMPONENTS, print.output = FALSE, plot.SNN = FALSE, resolution = resolution_)
-  
+  if(is.null(other_split_factor)){
+    ssce_id = Seurat::FindClusters(ssce_id, dims.use = 1:PCA_COMPONENTS, print.output = FALSE, plot.SNN = FALSE, resolution = resolution_)
+  } else{
+    ssce_id = Seurat::SetIdent(ssce_id, ident.use = ssce_id@meta.data[[other_split_factor]])
+  }
   new_id = str_c(id, '.', letters[as.numeric(ssce_id@ident)])
   ssce_id = Seurat::SetIdent(ssce_id, ident.use = new_id)
   
@@ -479,6 +485,24 @@ ssce_nr4a = split_and_cluster(ssce, 'NR4A+', s_mark, extra = c('CCR6', 'EGR2', '
 ssce_lmna = split_and_cluster(ssce, 'LMNA+', s_mark, extra = c('CCR6', 'EGR2', 'EGR3', 'CXCR4', 'BATF'), top_n = 20)
 
 ```
+
+## Recluster plasma cells
+
+```{r split_plasma}
+
+ggplot(ssce@meta.data, aes(x = forcats::fct_reorder(ident,NR4A_counts), y = NR4A_counts)) + 
+  geom_boxplot() + 
+  coord_flip() + 
+  xlab("Subpopulation") + 
+  ylab("NR4A1 + NRA42 + NR4A3 normalized expression")
+
+ssce_plasma = split_and_cluster(ssce, c('Plasma(i)', 'Plasma(ii)'), s_mark, top_n = 20, other_split_factor = 'any_NR4A', extra = c('CD69', 'FOS', 'JUN', 'CD83', 'GPR183', 'LY9', 'ZNF331'))
+
+
+Seurat::VlnPlot(Seurat::SubsetData(ssce_plasma, ident.use = c('Plasma(i).a', 'Plasma(ii).a', 'Plasma(i).b', 'Plasma(ii).b')), 'shm_rate', x.lab.rot = TRUE)
+
+```
+
 
 # SHM
 
@@ -539,6 +563,7 @@ knitr::kable(tlme_assoc0)
 ### SHM rate vs expression
 
 ```{r}
+shm_genes = c(shm_genes, 'NR4A_counts') # 'cause it's already defined in the meta.data
 gr = expand.grid(gene = shm_genes, ident_collapse = unique(meta_igd$ident_collapse), stringsAsFactors = FALSE)
 
 lme_assoc0 = map2_dfr(gr$gene, gr$ident_collapse, function(g, i){
@@ -583,11 +608,12 @@ smooth + aes(x = NR4A1)  + geom_line(data = filter(lme_smooths, gene == 'NR4A1')
 smooth + aes(x = NR4A2)  + geom_line(data = filter(lme_smooths, gene == 'NR4A2'), mapping = aes(x = x, y = y),  color = 'blue', lwd = 1)
 smooth + aes(x = NR4A3)  + geom_line(data = filter(lme_smooths, gene == 'NR4A3'), mapping = aes(x = x, y = y), color = 'blue', lwd = 1)
 
+smooth + aes(x = NR4A_counts) + geom_smooth(method = 'lm')
+
 smooth + aes(x = CD27)  + geom_line(data = filter(lme_smooths, gene == 'CD27'), mapping = aes(x = x, y = y), color = 'blue', lwd = 1)
 ```
 
 Somatic hypermutation rates (only among cells with recovered BCR!)
-
 
 
 ## BCR recovery
