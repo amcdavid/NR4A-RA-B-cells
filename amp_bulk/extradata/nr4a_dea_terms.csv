@@ -1,0 +1,7 @@
+model,term,n,term_class,plot_volcano,description
+Fibroblast,Intercept,30521,NA,FALSE,NA
+Fibroblast,nr4a_total_score,30521,NA,TRUE,"Fibroblast nr4a"
+Monocytes,Intercept,30521,NA,FALSE,NA
+Monocytes,nr4a_total_score,30521,NA,TRUE,"Monocytes nr4a"
+T cells,Intercept,30521,NA,FALSE,NA
+T cells,nr4a_total_score,30521,NA,TRUE,"T cells nr4a"

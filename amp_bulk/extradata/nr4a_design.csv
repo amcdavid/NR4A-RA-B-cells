@@ -1,0 +1,8 @@
+# name: identifier used for plotting, etc,,
+# formula DESeq2 formula,,,
+# subset_expr -- expression evaluated using the colData,,,
+# contrast -- currently unused,,,
+name,formula,subset_expr,contrast
+"T cells","~nr4a_total_score","Cell.type=='T cell'",
+Fibroblast,"~nr4a_total_score","Cell.type=='Fibro'",
+Monocytes,"~nr4a_total_score","Cell.type=='Mono'",

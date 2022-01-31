@@ -1,6 +1,7 @@
 ---
 title: "AMP phase 1 lowinput"
 output:
+    github_document: default
     html_document:
         code_folding: hide
         toc: yes
@@ -125,107 +126,8 @@ barplot
 
 ```
 
-```{r des_das}
-des = DESeqDataSet(se_b[,!is.na(se_b$DAS27_CRP)], design = ~  DAS27_CRP)
-des_das = DESeq(des)
-das_res = left_join(tidy(des_das) %>% dplyr::rename( ENSEMBL = gene), rowdat) %>% semi_join(genes2) %>% filter(term != 'Intercept')
-res_plot %+% das_res
-
-res_plot_uncert %+% das_res
-```
 
 
-### Fan-resolved DAS
-
-```{r des_dasfan}
-des = DESeqDataSet(se_b[,!is.na(se_b$DAS28_fan)], design = ~  DAS28_fan)
-des_das = DESeq(des)
-assays(des_das)$lcpm = log2(1+t(t(assay(des_das, 'counts'))/colSums(assay(des_das, 'counts')))*1e6)
-
-das_res = left_join(tidy(des_das) %>% dplyr::rename( ENSEMBL = gene), rowdat) %>% semi_join(genes2) %>% filter(term != 'Intercept')
-res_plot %+% das_res
-
-qplot(y = assay(des_das, 'lcpm')['ENSG00000153234',], # NR4A2
-      x = des_das$DAS28_fan, geom = 'point') + ylab('NR4A2')
-
-qplot(y = assay(des_das,  'lcpm')['ENSG00000123358',], # NR4A1
-      x = des_das$DAS28_fan, geom = 'point') + ylab('NR4A1')
-
-qplot(y = assay(des_das,  'lcpm')['ENSG00000140678',], # ITGAX
-      x = des_das$DAS28_fan, geom = 'point', color = des_das$Tissue.type) + ylab('log2(ITGAX + 1) CPM')
-
-cor.test( assay(des_das,  'lcpm')['ENSG00000140678',],  des_das$DAS28_fan)
-```
-
-### B/Live cells
-
-```{r des_lymp}
-des = DESeqDataSet(se_b[,!is.na(se_b$Bcells.ov.Live)], design = ~  Bcells.ov.Live)
-des_bcell = DESeq(des)
-das_bcell = left_join(tidy(des_bcell) %>% dplyr::rename( ENSEMBL = gene), rowdat) %>% semi_join(genes2) %>% filter(term != 'Intercept')
-res_plot %+% das_bcell
-
-b_results = cleanup_res(des_bcell)
-
-```
-
-### T/Live
-
-```{r des_tcell}
-des = DESeqDataSet(se_b[,!is.na(se_b$Tcells.ov.Live)], design = ~  Tcells.ov.Live)
-des_tcell = DESeq(des)
-das_tcell = left_join(tidy(des_tcell) %>% dplyr::rename( ENSEMBL = gene), rowdat) %>% semi_join(genes2) %>% filter(term != 'Intercept')
-res_plot %+% das_tcell
-
-t_results = cleanup_res(des_tcell)
-
-```
-
-```{r}
-(barplot %+% bind_rows(b_results)) + aes(y = estimate)
-```
-
-
-### Duration
-
-```{r des_duration}
-des = DESeqDataSet(se_b[,!is.na(se_b$duration_yrs)], design = ~  duration_yrs)
-des_duration = DESeq(des)
-das_duration = left_join(tidy(des_duration) %>% dplyr::rename( ENSEMBL = gene), rowdat) %>% semi_join(genes2) %>% filter(term != 'Intercept')
-res_plot %+% das_duration
-res_plot_uncert %+% das_duration
-duration_results = cleanup_res(des_duration)
-
-```
-
-### Anti-ccp
-
-```{r des_ccp}
-des = DESeqDataSet(se_b[,!is.na(se_b$anti_ccp_num)], design = ~  anti_ccp_num)
-des_ccp = DESeq(des)
-das_ccp = left_join(tidy(des_ccp) %>% dplyr::rename( ENSEMBL = gene), rowdat) %>% semi_join(genes2) %>% filter(term != 'Intercept')
-res_plot %+% das_ccp
-
-ccp_results = cleanup_res(des_ccp)
-
-qplot(y = assay(des_ccp)['ENSG00000153234',], # NR4A2
-      x = des_ccp$anti_ccp_category, geom = 'point') + ylab('NR4A2')
-```
-
-Higher levels of ccp mean lower levels of NR4A*
-
-
-### Inflammatory  "Mahanoblis" Score
-
-```{r des_inflam}
-des = DESeqDataSet(se_b[,!is.na(se_b$inflam_mahalanobis)], design = ~  inflam_mahalanobis)
-des_inflam = DESeq(des)
-das_inflam = left_join(tidy(des_inflam) %>% dplyr::rename( ENSEMBL = gene), rowdat) %>% semi_join(genes2) %>% filter(term != 'Intercept')
-res_plot %+% das_inflam
-
-inflam_results = cleanup_res(des_inflam)
-barplot %+% inflam_results  + aes(y = estimate)
-```
 
 ### Categorical mahanoblis
 
@@ -277,31 +179,6 @@ plt + aes(x = inflam_mahalanobis, y = Bcells.ov.Live)
 ggplot(dat, aes(fill = factor(anti_ccp_num), x = tissue)) + geom_bar()
 ```
 
-
-# Cross-type associations with NR4As
-
-```{r setup-cross}
-genes_nr4a = left_join(genes3, rowData(se) %>% as.data.frame() %>% dplyr::select(SYMBOL, ENSEMBL))
-se_b2 = se[, se$Cell.type == 'B cell']
-nr4a_total_score = colMeans(assay(se_b2, 'counts')[genes_nr4a$ENSEMBL,])
-nr4a2 = assay(se_b2, 'counts')[filter(genes_nr4a, SYMBOL == 'NR4A2')$ENSEMBL,]
-nr4a_covariates = data.frame(Donor.ID = se_b2$Donor.ID, nr4a_total_score = scale(nr4a_total_score), nr4a2 = scale(nr4a2))
-```
-
-
-```{r do-cross}
-type_tests = map_dfr(c(Fibro = 'Fibro', Mono = 'Mono', 'T cell ' = 'T cell'), function(type){
-  se_ = se[,se$Cell.type == type]
-  colData(se_) = left_join(as.data.frame(colData(se_)), nr4a_covariates) %>% DataFrame()
-  assays(se_) = list(counts = round(assays(se_)[['counts']]))
-  se_ = se_[,!is.na(se_$nr4a2)]
-  des_ = DESeqDataSet(se_, ~nr4a_total_score)
-  des_ = DESeq(des_)
-  results(des_, tidy = TRUE) %>% left_join(rowData(des_) %>% as.data.frame() %>% dplyr::select(SYMBOL, row = ENSEMBL)) %>% arrange(padj) %>% dplyr::rename(ENSEMBL = row)
-}, .id = 'Cell.type')
-```
-
 ```{r}
-type_tests %>% filter(pvalue < .1) %>% arrange(padj) %>% write_csv('refined/nr4a_score_assoc.csv')
+saveRDS(se, 'private/amp_lowinput_se.rds')
 ```
-
