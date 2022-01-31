@@ -1,2 +1,4 @@
 renv/
 *cache/
+private
+private/
