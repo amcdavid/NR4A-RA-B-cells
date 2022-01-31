@@ -1,0 +1,384 @@
+---
+title: "Phase1 / 10X Synovium Integration"
+author: "Andrew McDavid"
+date: '`r Sys.Date()`'
+output:
+  github_document: default
+  slidy_presentation:
+    font_adjustment: +1
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+    extensions: inline_footnotes
+---
+  
+  
+```{r library_load}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE, autodep=TRUE, message=FALSE, warning=FALSE)
+knitr::opts_chunk$set(dev = c('png', 'pdf'))
+
+library(SingleCellExperiment)
+library(readr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(scater)
+
+phase1 = readRDS('private/01_sce_bcell.rds')
+phase1_sle = readRDS('private/01_sle_bcell.rds')
+tenx = SingleCellExperiment(assay = readRDS('private/filtered_clustered_exprs.rds'),
+                                            rowData = read_csv('private/filtered_clustered_fdata.csv'),
+                                            colData = read_csv('private/filtered_clustered_cdata.csv'))
+zheng = DropletUtils::read10xCounts('private/zhen_bcells_filtered_matrices_mex/hg19/')
+```
+
+
+## Day 0
+
+```{r pitzalis_day0_br}
+lazy_cellcall = function(sce_){
+  br.out = DropletUtils::barcodeRanks(assay(sce_))
+  plot(br.out$rank, br.out$total, log="xy", xlab="Rank", ylab="Total")
+o = order(br.out$rank)
+lines(br.out$rank[o], br.out$fitted[o], col="red")
+abline(h=metadata(br.out)$knee, col="dodgerblue", lty=2)
+abline(h=metadata(br.out)$inflection, col="forestgreen", lty=2)
+legend("bottomleft", lty=2, col=c("dodgerblue", "forestgreen"), 
+    legend=c("knee", "inflection"))
+  br.out
+}
+
+call_intercalate = function(f, ..., extra){
+  do.call(f, c(list(...), extra))
+}
+
+halfbaked_qc = function(sce_, br.out, perCellQCArgs = list(percent_subsets = c('subsets_Mito_percent', 'percent_top_50'))) {
+  ncell_start = ncol(sce_)
+  is.mito = str_detect(rowData(sce_)$Symbol, '^MT-')
+  df = perCellQCMetrics(sce_, subsets=list(Mito=is.mito))
+  qqc = call_intercalate(quickPerCellQC, df, extra = perCellQCArgs)
+  colData(sce_) = cbind(colData(sce_), df, qqc)
+  
+  qcplot = ggplot(colData(sce_) %>% as.data.frame(), aes(x = discard, y = sum)) + geom_boxplot() 
+  print(qcplot + scale_y_log10())
+  print(qcplot + aes(y = detected) + scale_y_log10())
+  print(qcplot + aes(y = subsets_Mito_percent))
+  print(qcplot + aes(y = percent_top_50))
+  
+  if(!missing(br.out)){
+    empty = br.out$total < metadata(br.out)$knee
+    sce_ = sce_[,!empty & !qqc$discard]
+  } else{
+    empty = rep(FALSE, ncol(sce_))
+    sce_ = sce_[,!qqc$discard]
+  }
+  qc_table = data.frame(condition = c('start', 'empty', 'qc_fail', 'end'), ncells = c(ncell_start, sum(empty), sum(qqc$discard), ncol(sce_)))
+  sce_ = logNormCounts(sce_)
+  metadata(colData(sce_)) = list(qc = qc_table)
+  sce_
+}
+
+```
+
+# Combine data
+
+```{r intersect}
+# Disable log file cluttering 
+futile.logger::flog.threshold(futile.logger::ERROR, name = "VennDiagramLogger")
+
+vd = VennDiagram::venn.diagram(list(phase1_ra = rownames(phase1), 
+                                    tenx = rownames(tenx), 
+                                    phase1_sle = rownames(phase1_sle),
+                                    zheng = rowData(zheng)$Symbol),
+                                    filename = NULL, fill = c('red', 'yellow', 'blue', 'grey50'), alpha = rep(.35, 4))
+grid::grid.draw(vd)
+
+common_id = purrr::reduce(list(rownames(phase1), rownames(tenx), rownames(phase1_sle), rowData(zheng)$Symbol), intersect)
+```
+
+
+```{r}
+phase1_inter = phase1[common_id,]
+tenx_inter = tenx[common_id,]
+cd_phase1_inter = colData(phase1_inter) %>% as.data.frame() %>% select(Barcode = cell_name, orig_bc = barcode, sample, type, cluster, disease) %>% mutate(run = 'phase1')
+
+cd_tenx_inter = colData(tenx_inter) %>% as.data.frame() %>% select(subject = sample, sample = dataset, Barcode, chain_type,  class_heavy, class_light, shm_rate, res.0.5, ident) %>% mutate(cluster = str_c('TX', res.0.5), Barcode = make.unique(Barcode), run = 'tenx')
+
+rd_phase1_inter = rowData(phase1_inter) %>% as.data.frame() %>% select(symbol, group)
+rd_phase1_tenx =  rowData(tenx_inter) %>% as.data.frame() %>% select(symbol = Symbol)
+
+coldat_inter = bind_rows(cd_phase1_inter, cd_tenx_inter)
+rd_inter = left_join(rd_phase1_inter, rd_phase1_tenx)
+
+sce = SingleCellExperiment(assay = cbind(Matrix::Matrix(counts(phase1_inter), sparse = TRUE), assay(tenx_inter)),
+                           rowData = rd_inter, colData = coldat_inter)
+colnames(sce) = sce$Barcode
+assayNames(sce) = 'counts'
+blacklist = str_detect(rowData(sce)$symbol, 'IG[HKL]V[0-9]+')
+blacklist_name = rowData(sce)$symbol[blacklist]
+```
+
+
+## Zheng QC
+
+```{r}
+br.out = lazy_cellcall(zheng)
+```
+
+```{r zhengqc}
+zheng = halfbaked_qc(zheng, br.out)
+knitr::kable(metadata(colData(zheng))$qc)
+
+```
+
+
+```{r zhengfilt}
+zheng = zheng[!duplicated(rowData(zheng)$Symbol),]
+rownames(zheng) = rowData(zheng)$Symbol
+plotExpression(zheng, x = 'MS4A1', features = c('CD3E', 'CD14', 'CD19', 'XBP1', 'TCL1A', 'HOPX'))
+```
+
+No expression of CD3 or CD14, otherwise seems reasonable?
+
+## Joint QC
+
+```{r jqc}
+sce = halfbaked_qc(sce, perCellQCArgs = list(percent_subsets = NULL, batch = factor(sce$run)))
+knitr::kable(metadata(colData(sce))$qc)
+saveRDS(sce, file = 'refined/amp_sle_ra_sce.rds')
+```
+
+```{r monocyte_qc}
+sce$quickclust = scran::quickCluster(sce)
+plotExpression(sce, x = "PDPN", features = c("FN1", 'COL3A1'), colour_by = "run", exprs_values = 'logcounts')
+
+plotExpression(sce, x = 'CD14', features = 'CXCL16', colour_by = 'quickclust')
+plotExpression(sce, x = 'quickclust', features = c('CD14', 'CXCL16'), colour_by = 'run')
+```
+
+
+
+# SLE Phase 1
+
+```{r}
+phase1_sle = logNormCounts(phase1_sle)
+
+ggplot(as.data.frame(colData(phase1_sle)), aes(x = sample, fill = cluster)) + geom_bar() + coord_flip()
+
+```
+
+# SingleR
+
+## Train on 10x, predict on AMP and Zheng
+
+```{r singler}
+ref = sce[,sce$run == 'tenx' & !is.na(sce$ident)]
+
+train = SingleR::trainSingleR(ref = ref, labels = ref$ident, de.method = "classic")
+phase1 = sce[,sce$run == 'phase1']
+
+pred_tenx = SingleR::classifySingleR(ref, train)
+pred_phase1 = SingleR::classifySingleR(phase1, train)
+pred_sle = SingleR::classifySingleR(phase1_sle, train)
+pred_zheng = SingleR::classifySingleR(zheng, train)
+```
+
+```r
+
+merge.SingleCellExperiment = function(x, y, ...){
+    nx = x
+   rd = getS3method('merge', class(rowData(x)))(x, y, ...)
+   cd = colData(x)
+}
+
+```
+
+
+## Classifying our 10x data
+
+```{r singler_10x}
+SingleR::plotScoreHeatmap(pred_tenx, clusters = ref$ident, show.labels = FALSE)
+```
+
+## Classifying phase 1
+
+```{r singler_ampra}
+SingleR::plotScoreHeatmap(pred_phase1, clusters = phase1$cluster)
+SingleR::plotScoreDistribution(pred_phase1, show = "delta.med", show.nmads = 3)
+
+```
+
+Shows scores of classified vs non-classified cells.  Horizontal line is the lines for rejecting any classification.
+
+## Classifying SLE phase1
+
+```{r singler_ampsle}
+SingleR::plotScoreHeatmap(pred_sle, clusters = phase1_sle$cluster)
+SingleR::plotScoreDistribution(pred_sle, show = "delta.med", show.nmads = 3)
+
+
+pred_phase1_sle_df = cbind(pred_sle, colData(phase1_sle))
+
+ggplot(as.data.frame(pred_phase1_sle_df), aes(x = sample, fill = pruned.labels)) + 
+  geom_bar() + coord_flip()
+
+```
+
+## Classifying Zheng CD19 B
+
+```{r singler_zheng}
+SingleR::plotScoreHeatmap(pred_zheng)
+SingleR::plotScoreDistribution(pred_zheng, show = "delta.med", show.nmads = 3)
+
+
+pred_zhang_df = cbind(pred_zheng, colData(zheng), sample = 'Zheng PBMC', cluster = 'CD19+ B')
+```
+
+
+
+```{r singler_phase1_distr}
+pred_phase1_df = cbind(pred_phase1, colData(phase1))
+
+sample_prop = as.data.frame(pred_phase1_df) %>% group_by(pruned.labels, sample, disease) %>% 
+  summarize(n_cluster = n()) %>% group_by(sample, disease) %>% mutate(n_overall = sum(n_cluster),
+                                                                      prop = n_cluster/n_overall)
+
+
+crosstab = as.data.frame(xtabs(~pruned.labels + cluster + sample, data = as.data.frame(pred_phase1_df), addNA = TRUE))
+
+crosstab2 = as.data.frame(xtabs(Freq ~sample, data = crosstab)) %>% rename(total = Freq)
+crosstab = left_join(crosstab, crosstab2) %>% mutate(prop = Freq/total)
+
+
+#crosstab = as.data.frame(pred_phase1b) %>% group_by(pruned.labels, cluster, sample, disease) %>% 
+#  summarize(n_cluster = n()) %>% group_by(sample, disease) %>% mutate(n_overall = sum(n_cluster),
+#                                                                      prop = n_cluster/n_overall) %>% #tidyr::complete(pruned.labels, cluster, tidyr::nesting(sample, disease), fill = list(prop = 0))
+
+ggplot(crosstab, aes(x = cluster, y = pruned.labels, fill = prop)) + geom_tile() +
+  facet_wrap(~sample) + scale_fill_distiller()
+
+ggplot(sample_prop, aes(x = pruned.labels, y = prop)) + geom_boxplot()
+ggplot(sample_prop, aes(x = sample, fill = pruned.labels, y = prop)) + 
+  geom_col() + coord_flip()
+
+```
+
+
+```{r singler_allexp}
+pred_tenx = cbind(pred_tenx, colData(ref))
+all_df = list(synovium = pred_tenx[, c('scores', 'pruned.labels', 'cluster', 'sample')],
+  amp_sle = pred_phase1_sle_df[, c('scores', 'pruned.labels', 'cluster', 'sample')], 
+                 amp_ra = pred_phase1_df[, c('scores', 'pruned.labels', 'cluster', 'sample')],
+              peripheral_b = pred_zhang_df[, c('scores', 'pruned.labels', 'cluster', 'sample')]
+  )
+
+all_pred = purrr::map_dfr(all_df, as.data.frame, .id = 'experiment')
+
+all_pred = mutate(all_pred, experiment = ifelse(sample == 'RA134_BLD', 'peripheral_b', experiment))
+
+sample_exp_tab = unique(select(all_pred, experiment, sample)) %>%
+  mutate(Experiment = factor(experiment, levels = c('amp_sle', 'peripheral_b','amp_ra', 'synovium'), labels = c('SLE (AMP)',  'Peripheral B', 'Synovium (AMP)', 'Synovium (10x)')))
+
+score_plot = ggplot(all_pred, aes(x = cluster, y = scores.NR4A.))  + 
+  facet_grid(~experiment, space = 'free_x', scales = 'free_x') + ylab('Spearman Correlation NR4A+')
+
+score_plot + ggbeeswarm::geom_quasirandom()
+score_plot + geom_boxplot()
+score_plot + aes(y = scores.Plasma.i.) + geom_boxplot()
+score_plot + aes(x = pruned.labels) + geom_boxplot()
+
+ggplot(all_pred, aes(x = sample, fill = pruned.labels)) + geom_bar() + 
+  facet_wrap(~experiment, scales = 'free') + coord_flip()
+summary(lm(scores.NR4A. ~ experiment, data = filter(all_pred, pruned.labels == 'NR4A+')))
+
+```
+
+Compare 28 NRA41+ cells in SLE to 835 cells in RA.
+Maybe also compare the gap between first and second or first and third (since second is likely LMNA+) best cluster?
+
+```{r}
+subpop_mixedmodel = function(population) {
+  sample_tab = table(sample = all_pred$sample, 'subpop' = all_pred$pruned.labels== population)
+  
+  knitr::kable(sample_tab)
+  
+  sample_tab = sample_tab[rowSums(sample_tab) >= 5,]
+  
+  sample_tib = as_tibble(unclass(sample_tab), rownames = 'sample') %>% left_join(sample_exp_tab)
+  
+  subpop_lme = lme4::glmer(cbind(`TRUE`, `FALSE`) ~ experiment + (1|sample), family = 'binomial', data = sample_tib)
+  exp_tab = data.frame(experiment = unique(sample_tib$experiment, sample = NA))
+  
+  bs = lme4::bootMer(subpop_lme, nsim = 100, re.form = NA, FUN = function(m) predict(m, newdata =exp_tab , re.form = NA, type = 'response'))
+  
+  subpop_fitted = cbind(estimate = bs$t0, exp_tab, confint(bs)) %>% right_join(unique(sample_exp_tab[c('experiment', 'Experiment')]))
+  
+  
+  subpop_tab = as.data.frame(prop.table(sample_tab, margin = 1)) %>% left_join(sample_exp_tab) %>% filter(subpop == TRUE)
+  
+  plt = ggplot(subpop_tab, aes(x = Experiment, y = Freq)) + ggbeeswarm::geom_beeswarm() + geom_crossbar(data = subpop_fitted, aes(y = estimate, ymin = `2.5 %`, ymax = `97.5 %`), color = 'blue', width = .1) + theme_minimal() + ylab(sprintf("%s Frequency", population))
+  print(plt)
+  invisible(list(lme = subpop_lme, ggplot = plt, sample_tib = sample_tib))
+}
+
+```
+
+```{r nr4a_mm}
+nr4_lme = subpop_mixedmodel("NR4A+")
+nr4a_tib = nr4_lme$sample_tib
+summary(nr4_lme$lme)
+```
+
+
+### LMNA frequencies
+
+```{r lmna_mm}
+lmna_lme = subpop_mixedmodel("LMNA+")
+summary(lmna_lme$lme)
+```
+
+
+# Correlate AMP-1 with singleR labels
+
+```{r}
+cluster_id = readRDS('private/celseq_synovium_meta_5265cells_paper.rds')
+
+cluster_freq = cluster_id %>% group_by(cell_type) %>% do({
+  cluster = factor(.$cluster)
+  sample = factor(.$sample)
+  tab = table(cluster, sample)
+  as.data.frame(tab)
+}) %>% group_by(cell_type, sample) %>% mutate(total = sum(Freq), percent = Freq/total*100)
+
+phase1_join = inner_join(nr4a_tib, cluster_freq) 
+
+
+```
+
+```{r nr4a_phase1_cluster, dev = c('png', 'pdf')}
+#sce_t = readRDS('01_sce_tcell.rds')
+
+#t_pop = colData(sce_t) %>% as.data.frame() %>% filter(!is.na(cluster))
+
+# count_pops = . %>% group_by(sample, disease, cluster) %>% summarize(n()) %>% tidyr::complete(cluster, tidyr::nesting(sample, disease), fill = list(`n()` =0)) %>%
+#   group_by(sample, disease) %>% mutate(total = sum(`n()`), prop = `n()`/total) 
+# 
+# t_pop = t_pop %>% count_pops 
+# 
+# b_pop = md %>% count_pops
+# 
+# both_pop = inner_join(t_pop, b_pop, by = c('sample', 'disease'), suffix = c('_t', '_b'))
+
+pop_tests = phase1_join %>% group_by(cluster) %>% do({
+  dat = .
+  gg = lme4::glmer(cbind(`TRUE`, `FALSE`) ~ percent+ (1|sample),  data = dat, family= 'binomial')
+  broom::tidy(gg, conf.int = TRUE)
+})
+
+ptests = filter(pop_tests, term == 'percent') %>% ungroup() %>% mutate(fdr = p.adjust(p.value)) %>% select(-term) %>% rename(term = cluster)
+
+dotwhisker::dwplot(ptests) + geom_text(aes(x = estimate, y = term, label = ifelse(fdr < .01, '<.01', round(fdr, 2))), position = position_nudge(y = .2, x = .04)) + ylab("Phase 1 cluster") + xlab("Log odds of NR4A+\n per % phase 1")
+
+knitr::kable(ptests)
+```
