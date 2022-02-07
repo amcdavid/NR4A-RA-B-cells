@@ -11,7 +11,7 @@ code and primary data for expression and BCR for single cells from peripheral bl
 Uses R 3.5.1
 
 ### [reanalysis](reanalysis/) 
-code to infer cell types, e.g. figure 1E.
+Code to infer cell types on external data sets e.g. figure 1E.
 Uses R 3.6.1
 
 ### [amp_bulk](amp_bulk/)
