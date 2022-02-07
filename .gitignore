@@ -5,3 +5,4 @@
 *.Rproj
 .Rprofile
 .DS_Store
+.Renviron
