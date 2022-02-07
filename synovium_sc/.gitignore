@@ -1,3 +1,4 @@
 renv/
 *cache/
 refined/bcells_seurat_v2_3_4.rds
+*.html
