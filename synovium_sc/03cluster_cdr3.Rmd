@@ -3,13 +3,16 @@ title: "Clustering BCR"
 author: "Andrew McDavid"
 date: '`r Sys.Date()`'
 output:
+  github_document:
+    default
   slidy_presentation:
     font_adjustment: +1
   html_document:
     code_folding: hide
     toc: yes
     toc_float: yes
-extensions: inline_footnotes
+extensions:
+  always_allow_html: yes
 ---
 
 # Load libraries
